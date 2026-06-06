@@ -6,6 +6,7 @@ mod environment;
 mod git_cache;
 mod install;
 mod manifest;
+mod profile;
 mod project;
 mod releases;
 mod toolchain;
@@ -14,6 +15,8 @@ mod util;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Commands};
+use profile::Profile;
+use std::str::FromStr;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -42,7 +45,11 @@ fn main() -> Result<()> {
                 force,
                 git,
                 repo,
-            } => toolchain::install_with_opts(&version, force, git, repo.as_deref()),
+                profile,
+            } => {
+                let profile = Profile::from_str(&profile).unwrap_or_else(|_| Profile::Default);
+                toolchain::install_with_opts(&version, force, git, repo.as_deref(), &profile)
+            }
             cli::ToolchainCommands::Remove { version } => toolchain::remove(&version),
             cli::ToolchainCommands::List => toolchain::list(),
         },

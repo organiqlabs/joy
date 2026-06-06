@@ -64,6 +64,9 @@ pub enum ToolchainCommands {
         /// Git remote URL (required with --git, defaults to flutter/flutter)
         #[arg(long)]
         repo: Option<String>,
+        /// Installation profile: minimal (SDK only), default (SDK+engine), full (all platforms)
+        #[arg(long, default_value = "default")]
+        profile: String,
     },
     /// Remove an installed Flutter toolchain
     Remove { version: String },

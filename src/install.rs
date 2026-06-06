@@ -1,6 +1,7 @@
 use crate::config;
 use crate::engine_cache;
 use crate::git_cache;
+use crate::profile::Profile;
 use crate::releases;
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -102,8 +103,8 @@ pub(crate) fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     }
 }
 
-/// Install a specific Flutter version
-pub fn install_version(version: &str, force: bool) -> Result<()> {
+/// Install a specific Flutter version with a given profile
+pub fn install_version(version: &str, force: bool, profile: &Profile) -> Result<()> {
     let env_dir = config::envs_dir().join(version);
 
     // Check if already installed
@@ -167,8 +168,9 @@ pub fn install_version(version: &str, force: bool) -> Result<()> {
     // Cleanup archive
     std::fs::remove_file(&archive_path)?;
 
-    // Adopt engine into shared cache and replace with symlink
-    if let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir) {
+    if profile.includes_engine()
+        && let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir)
+    {
         let engine_path = env_dir.join("bin").join("cache").join("engine");
         if engine_path.exists() {
             match engine_cache::adopt_engine_dir(&env_dir, &engine_ver) {
@@ -191,6 +193,16 @@ pub fn install_version(version: &str, force: bool) -> Result<()> {
 /// Creates a lightweight worktree checkout (no .git duplication) and
 /// downloads the engine concurrently.
 pub fn install_version_git(version: &str, repo_url: Option<&str>, force: bool) -> Result<()> {
+    install_version_git_with_profile(version, repo_url, force, &Profile::Default)
+}
+
+/// Install a Flutter SDK version via Git with a specific profile.
+pub fn install_version_git_with_profile(
+    version: &str,
+    repo_url: Option<&str>,
+    force: bool,
+    profile: &Profile,
+) -> Result<()> {
     let env_dir = config::envs_dir().join(version);
 
     if env_dir.join("bin").join("flutter").exists()
@@ -216,8 +228,9 @@ pub fn install_version_git(version: &str, repo_url: Option<&str>, force: bool) -
         eprintln!("⚠️  Toolchain is not a lightweight worktree (.git is a directory)");
     }
 
-    // Now read the engine version, download + symlink
-    if let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir) {
+    if profile.includes_engine()
+        && let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir)
+    {
         if !engine_cache::engine_dir(&engine_ver).exists() {
             println!("⚙️  Downloading engine {engine_ver}...");
             let engine_clone = engine_ver.clone();
@@ -752,6 +765,107 @@ mod tests {
         assert!(
             result.is_ok() || result.is_err(),
             "should handle gracefully"
+        );
+    }
+
+    // ---- Profile-aware install tests ----
+
+    #[test]
+    #[serial]
+    fn test_minimal_profile_skips_engine() {
+        let tag = "minimal-test-v1";
+        let engine_ver = "minimal-engine";
+
+        let (_tmp, dartup_home) = setup_dartup_home();
+        let remote_dir = dartup_home.join("remote");
+        create_test_repo(&remote_dir, tag, engine_ver);
+
+        // Use minimal profile — engine should NOT be downloaded
+        super::install_version_git_with_profile(
+            tag,
+            Some(remote_dir.to_str().unwrap()),
+            false,
+            &crate::profile::Profile::Minimal,
+        )
+        .unwrap();
+
+        let env_dir = config::envs_dir().join(tag);
+        assert!(
+            env_dir.join("bin").join("flutter").exists(),
+            "flutter binary should exist"
+        );
+        assert!(
+            !env_dir.join("bin").join("cache").join("engine").exists(),
+            "minimal profile should NOT create engine symlink"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_default_profile_includes_engine() {
+        let tag = "default-test-v1";
+        let engine_ver = "default-engine";
+
+        let (_tmp, dartup_home) = setup_dartup_home();
+        let remote_dir = dartup_home.join("remote");
+        create_test_repo(&remote_dir, tag, engine_ver);
+        pre_populate_engine(&dartup_home, engine_ver);
+
+        // Default profile — engine should be symlinked
+        super::install_version_git_with_profile(
+            tag,
+            Some(remote_dir.to_str().unwrap()),
+            false,
+            &crate::profile::Profile::Default,
+        )
+        .unwrap();
+
+        let env_dir = config::envs_dir().join(tag);
+        assert!(
+            env_dir
+                .join("bin")
+                .join("cache")
+                .join("engine")
+                .is_symlink(),
+            "default profile should create engine symlink"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_minimal_profile_and_no_engine_version_works() {
+        let tag = "minimal-noeng-v1";
+        let (_tmp, dartup_home) = setup_dartup_home();
+        let remote_dir = dartup_home.join("remote");
+        let repo = git2::Repository::init(&remote_dir).unwrap();
+        std::fs::create_dir_all(remote_dir.join("bin")).unwrap();
+        std::fs::write(remote_dir.join("bin").join("flutter"), b"#!/bin/sh").unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "no engine", &tree, &[])
+            .unwrap();
+        let commit = repo.find_commit(oid).unwrap();
+        repo.tag(tag, commit.as_object(), &sig, tag, false).unwrap();
+
+        super::install_version_git_with_profile(
+            tag,
+            Some(remote_dir.to_str().unwrap()),
+            false,
+            &crate::profile::Profile::Minimal,
+        )
+        .unwrap();
+
+        let env_dir = config::envs_dir().join(tag);
+        assert!(
+            env_dir.join("bin").join("flutter").exists(),
+            "flutter binary should exist even with minimal profile"
         );
     }
 

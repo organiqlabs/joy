@@ -1,14 +1,21 @@
 use crate::config;
+use crate::profile::Profile;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::PathBuf;
 
 /// Install a Flutter SDK toolchain, optionally via Git clone with shared object cache
-pub fn install_with_opts(version: &str, force: bool, git: bool, repo: Option<&str>) -> Result<()> {
+pub fn install_with_opts(
+    version: &str,
+    force: bool,
+    git: bool,
+    repo: Option<&str>,
+    profile: &Profile,
+) -> Result<()> {
     if git {
-        crate::install::install_version_git(version, repo, force)
+        crate::install::install_version_git_with_profile(version, repo, force, profile)
     } else {
-        crate::install::install_version(version, force)
+        crate::install::install_version(version, force, profile)
     }
 }
 
