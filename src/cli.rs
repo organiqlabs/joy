@@ -18,7 +18,14 @@ pub enum Commands {
         all: bool,
     },
     /// Run garbage collection on unused cached artifacts
-    Gc,
+    Gc {
+        /// Also clean the shared Git object cache
+        #[arg(long)]
+        git: bool,
+        /// Also clean the shared engine cache
+        #[arg(long)]
+        engines: bool,
+    },
     /// Check that dartup is set up correctly
     Doctor,
     /// Set the global default Flutter toolchain (e.g., "3.29.0", "stable")
@@ -51,6 +58,12 @@ pub enum ToolchainCommands {
         /// Re-download even if cached
         #[arg(short, long)]
         force: bool,
+        /// Clone from Git repo using the shared object cache
+        #[arg(long)]
+        git: bool,
+        /// Git remote URL (required with --git, defaults to flutter/flutter)
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Remove an installed Flutter toolchain
     Remove { version: String },

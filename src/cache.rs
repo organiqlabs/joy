@@ -1,55 +1,64 @@
 use crate::config;
-use crate::util::{dir_size, human_size};
+use crate::engine_cache;
+use crate::git_cache;
+use crate::util::human_size;
 use anyhow::Result;
 use colored::Colorize;
 
 /// Run garbage collection on cached artifacts
-pub fn run_gc() -> Result<()> {
+pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
     println!("{}", "Running garbage collection...".bold());
 
-    let engine_cache = config::engine_cache_dir();
-    let git_cache = config::git_cache_dir();
-
-    // Find which engine versions are actually in use by installed environments
-    let used_engines = find_used_engine_versions()?;
-
-    // Clean unused engine artifacts
-    if engine_cache.exists() {
-        let mut cleaned = 0u64;
-        for entry in std::fs::read_dir(&engine_cache)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !used_engines.contains(&name) {
-                let size = dir_size(entry.path());
-                if entry.path().is_dir() {
-                    std::fs::remove_dir_all(entry.path())?;
-                } else {
-                    std::fs::remove_file(entry.path())?;
-                }
-                cleaned += size;
-                println!(
-                    "  🗑️  Removed unused engine cache: {} ({})",
-                    name,
-                    human_size(size)
-                );
-            }
-        }
-        if cleaned > 0 {
-            println!("✅ Freed {}", human_size(cleaned).green().bold());
+    // Clean shared engine cache if requested
+    if clean_engines {
+        let engines_path = engine_cache::cache_dir();
+        if engines_path.exists() {
+            let eng_size = engine_cache::cache_size();
+            engine_cache::clear_cache()?;
+            println!(
+                "  🗑️  Removed shared engine cache ({})",
+                human_size(eng_size)
+            );
+            println!("✅ Freed {}", human_size(eng_size).green().bold());
         } else {
-            println!("✅ No unused engine artifacts found.");
+            println!("ℹ️  No shared engine cache to clean.");
         }
     } else {
-        println!("ℹ️  No engine cache directory.");
+        let engines_path = engine_cache::cache_dir();
+        if engines_path.exists() {
+            let eng_count = engine_cache::cached_versions().unwrap_or_default().len();
+            let eng_size = engine_cache::cache_size();
+            println!(
+                "📦 Shared engine cache: {} ({} versions, use --engines to clean)",
+                human_size(eng_size),
+                eng_count
+            );
+        }
     }
 
-    // Report git cache size
-    if git_cache.exists() {
-        let git_size = dir_size(git_cache);
-        println!(
-            "📦 Git cache: {} (shared across all versions)",
-            human_size(git_size)
-        );
+    // Clean git object cache if requested
+    if clean_git {
+        let git_path = git_cache::git_cache_path();
+        if git_path.exists() {
+            let git_size = git_cache::cache_size().unwrap_or(0);
+            git_cache::clear_cache()?;
+            println!(
+                "  🗑️  Removed shared Git object cache ({})",
+                human_size(git_size)
+            );
+            println!("✅ Freed {}", human_size(git_size).green().bold());
+        } else {
+            println!("ℹ️  No Git object cache to clean.");
+        }
+    } else {
+        let git_path = git_cache::git_cache_path();
+        if git_path.exists() {
+            let git_size = git_cache::cache_size().unwrap_or(0);
+            println!(
+                "📦 Git object cache: {} (use --git to clean)",
+                human_size(git_size)
+            );
+        }
     }
 
     Ok(())

@@ -3,9 +3,13 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::PathBuf;
 
-/// Install a Flutter SDK toolchain (version/channel)
-pub fn install(version: &str, force: bool) -> Result<()> {
-    crate::install::install_version(version, force)
+/// Install a Flutter SDK toolchain, optionally via Git clone with shared object cache
+pub fn install_with_opts(version: &str, force: bool, git: bool, repo: Option<&str>) -> Result<()> {
+    if git {
+        crate::install::install_version_git(version, repo, force)
+    } else {
+        crate::install::install_version(version, force)
+    }
 }
 
 /// Remove an installed Flutter toolchain (version/channel)

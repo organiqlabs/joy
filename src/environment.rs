@@ -1,4 +1,6 @@
 use crate::config;
+use crate::engine_cache;
+use crate::git_cache;
 use crate::util::{dir_size, human_size};
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -183,17 +185,54 @@ pub fn run_doctor() -> Result<()> {
         println!("ℹ️  No global default set");
     }
 
+    // Engine cache info
+    let engines_path = engine_cache::cache_dir();
+    if engines_path.exists() {
+        let engines_count = engine_cache::cached_versions().unwrap_or_default().len();
+        let engines_size = engine_cache::cache_size();
+        println!(
+            "📦 Shared engine cache: {} ({} versions) at {}",
+            human_size(engines_size),
+            engines_count,
+            engines_path.display()
+        );
+    } else {
+        println!("ℹ️  No shared engine cache. Engines will be adopted on install.");
+    }
+
+    // Git object cache info
+    let git_path = git_cache::git_cache_path();
+    if git_path.exists() {
+        let git_objects_size = git_cache::cache_size().unwrap_or(0);
+        println!(
+            "📦 Git object cache: {} at {}",
+            human_size(git_objects_size),
+            git_path.display()
+        );
+        if std::fs::read_dir(git_path.join("objects").join("pack"))
+            .ok()
+            .map_or(0, |d| d.filter_map(|e| e.ok()).count())
+            > 0
+        {
+            println!("✅ Shared object store has packed objects");
+        }
+    } else {
+        println!(
+            "ℹ️  No global Git object cache. Create one with 'dartup toolchain install --git <version>'"
+        );
+    }
+
     // Check for disk usage
     let envs_size = dir_size(config::envs_dir());
-    let cache_size = dir_size(config::engine_cache_dir());
-    let git_cache = dir_size(config::git_cache_dir());
+    let engine_cache_size = engine_cache::cache_size();
+    let git_cache_disk = dir_size(&git_path);
     println!("💾 Disk usage:");
     println!("   Environments: {}", human_size(envs_size));
-    println!("   Engine cache: {}", human_size(cache_size));
-    println!("   Git cache:    {}", human_size(git_cache));
+    println!("   Engine cache: {}", human_size(engine_cache_size));
+    println!("   Git cache:    {}", human_size(git_cache_disk));
     println!(
         "   Total:        {}",
-        human_size(envs_size + cache_size + git_cache)
+        human_size(envs_size + engine_cache_size + git_cache_disk)
     );
 
     Ok(())

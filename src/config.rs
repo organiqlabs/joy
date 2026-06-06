@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Returns the dartup home directory (~/.dartup)
+/// Returns the dartup home directory.
+/// Override with DARTUP_HOME env var (for testing); defaults to ~/.dartup
 pub fn dartup_home() -> PathBuf {
+    if let Ok(overridden) = std::env::var("DARTUP_HOME") {
+        return PathBuf::from(overridden);
+    }
     dirs::home_dir()
         .expect("Could not find home directory")
         .join(".dartup")
