@@ -14,19 +14,16 @@ pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
         if engines_path.exists() {
             let eng_size = engine_cache::cache_size();
             engine_cache::clear_cache()?;
-            println!(
-                "  🗑️  Removed shared engine cache ({})",
-                human_size(eng_size)
-            );
-            println!("✅ Freed {}", human_size(eng_size).green().bold());
+            println!("  Removed shared engine cache ({})", human_size(eng_size));
+            println!("Freed {}", human_size(eng_size).green().bold());
         } else {
-            println!("ℹ️  No shared engine cache to clean.");
+            println!("No shared engine cache to clean.");
         }
     } else if engines_path.exists() {
         let eng_count = engine_cache::cached_versions().unwrap_or_default().len();
         let eng_size = engine_cache::cache_size();
         println!(
-            "📦 Shared engine cache: {} ({} versions, use --engines to clean)",
+            "Shared engine cache: {} ({} versions, use --engines to clean)",
             human_size(eng_size),
             eng_count
         );
@@ -39,17 +36,17 @@ pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
             let git_size = git_cache::cache_size();
             git_cache::clear_cache()?;
             println!(
-                "  🗑️  Removed shared Git object cache ({})",
+                "  Removed shared Git object cache ({})",
                 human_size(git_size)
             );
-            println!("✅ Freed {}", human_size(git_size).green().bold());
+            println!("Freed {}", human_size(git_size).green().bold());
         } else {
-            println!("ℹ️  No Git object cache to clean.");
+            println!("No Git object cache to clean.");
         }
     } else if git_path.exists() {
         let git_size = git_cache::cache_size();
         println!(
-            "📦 Git object cache: {} (use --git to clean)",
+            "Git object cache: {} (use --git to clean)",
             human_size(git_size)
         );
     }

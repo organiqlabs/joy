@@ -453,7 +453,7 @@ mod tests {
         let env_dir = tmp.join("envs").join("ver");
         let cache_root = tmp.join("engines");
 
-        // Create an empty engine cache dir — no platform subdirectories
+        // Create an empty engine cache dir -- no platform subdirectories
         let cache_dir = cache_root.join(engine_ver);
         std::fs::create_dir_all(&cache_dir).unwrap();
 
@@ -877,7 +877,7 @@ mod tests {
         );
 
         extract_web_sdk(&zip_path, &dest).unwrap();
-        // Call again — should not error even if subdirs already moved
+        // Call again -- should not error even if subdirs already moved
         extract_web_sdk(&zip_path, &dest).unwrap();
 
         assert!(dest.join("web-canvaskit").exists());

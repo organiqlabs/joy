@@ -82,7 +82,7 @@ pub fn show_current() -> Result<()> {
         let target = std::fs::read_link(&global_path)?;
         if let Some(name) = target.file_name() {
             println!(
-                "Global:  {} → {}",
+                "Global:  {} -> {}",
                 name.to_string_lossy().green().bold(),
                 target.display()
             );
@@ -119,10 +119,7 @@ pub fn set_global(version: &str) -> Result<()> {
     std::os::windows::fs::symlink_dir(&env_dir, &global_path)
         .context("Failed to create global symlink")?;
 
-    println!(
-        "✅ Global default set to Flutter {}.",
-        version.green().bold()
-    );
+    println!("Global default set to Flutter {}.", version.green().bold());
     println!(
         "   Add {} to your PATH to use 'dartup flutter'",
         config::envs_dir().join(version).join("bin").display()
@@ -144,12 +141,12 @@ pub fn remove_version(version: &str) -> Result<()> {
     }
 
     std::fs::remove_dir_all(&env_dir)?;
-    println!("🗑️  Removed Flutter {version}.");
+    println!("Removed Flutter {version}.");
     println!("   (Cached engine artifacts remain. Run 'dartup gc' to free disk space.)");
     Ok(())
 }
 
-/// Run doctor — verify installation
+/// Run doctor -- verify installation
 pub fn run_doctor() -> Result<()> {
     println!("{}", "dartup Doctor".bold());
     println!();
@@ -157,16 +154,16 @@ pub fn run_doctor() -> Result<()> {
     // Check dartup data and cache directories
     let data_dir = config::data_root();
     if data_dir.exists() {
-        println!("✅ Data directory: {}", data_dir.display());
+        println!("Data directory: {}", data_dir.display());
     } else {
-        println!("⚠️  Data directory missing: {}", data_dir.display());
+        println!("Data directory missing: {}", data_dir.display());
     }
 
     let cache_dir = config::cache_root();
     if cache_dir.exists() {
-        println!("✅ Cache directory: {}", cache_dir.display());
+        println!("Cache directory: {}", cache_dir.display());
     } else {
-        println!("⚠️  Cache directory missing: {}", cache_dir.display());
+        println!("Cache directory missing: {}", cache_dir.display());
     }
 
     // Check installed versions
@@ -174,22 +171,22 @@ pub fn run_doctor() -> Result<()> {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
         .count();
-    println!("📦 Installed versions: {}", envs);
+    println!("Installed versions: {}", envs);
 
     // Check global default
     let global = config::global_default_path();
     if global.is_symlink() {
         if let Ok(target) = std::fs::read_link(&global) {
-            println!("🔗 Global default → {}", target.display());
+            println!("Global default -> {}", target.display());
             // Verify the symlink target still exists
             if target.exists() {
-                println!("✅ Global symlink target exists");
+                println!("Global symlink target exists");
             } else {
-                println!("❌ Global symlink target is broken!");
+                println!("Global symlink target is broken!");
             }
         }
     } else {
-        println!("ℹ️  No global default set");
+        println!("No global default set");
     }
 
     // Engine cache info
@@ -198,13 +195,13 @@ pub fn run_doctor() -> Result<()> {
         let engines_count = engine_cache::cached_versions().unwrap_or_default().len();
         let engines_size = engine_cache::cache_size();
         println!(
-            "📦 Shared engine cache: {} ({} versions) at {}",
+            "Shared engine cache: {} ({} versions) at {}",
             human_size(engines_size),
             engines_count,
             engines_path.display()
         );
     } else {
-        println!("ℹ️  No shared engine cache. Engines will be adopted on install.");
+        println!("No shared engine cache. Engines will be adopted on install.");
     }
 
     // Git object cache info
@@ -212,7 +209,7 @@ pub fn run_doctor() -> Result<()> {
     if git_path.exists() {
         let git_objects_size = git_cache::cache_size();
         println!(
-            "📦 Git object cache: {} at {}",
+            "Git object cache: {} at {}",
             human_size(git_objects_size),
             git_path.display()
         );
@@ -221,11 +218,11 @@ pub fn run_doctor() -> Result<()> {
             .map_or(0, |d| d.filter_map(|e| e.ok()).count())
             > 0
         {
-            println!("✅ Shared object store has packed objects");
+            println!("Shared object store has packed objects");
         }
     } else {
         println!(
-            "ℹ️  No global Git object cache. Create one with 'dartup toolchain install --git <version>'"
+            "No global Git object cache. Create one with 'dartup toolchain install --git <version>'"
         );
     }
 
@@ -233,7 +230,7 @@ pub fn run_doctor() -> Result<()> {
     let envs_size = dir_size(config::envs_dir());
     let engine_cache_size = engine_cache::cache_size();
     let git_cache_disk = dir_size(&git_path);
-    println!("💾 Disk usage:");
+    println!("Disk usage:");
     println!("   Environments: {}", human_size(envs_size));
     println!("   Engine cache: {}", human_size(engine_cache_size));
     println!("   Git cache:    {}", human_size(git_cache_disk));

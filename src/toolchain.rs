@@ -44,17 +44,14 @@ pub fn show_default() {
         && let Some(name) = target.file_name()
     {
         println!(
-            "{} {} → {}",
+            "{} {} -> {}",
             "default:".bold(),
             name.to_string_lossy().green().bold(),
             target.display()
         );
         return;
     }
-    println!(
-        "{} No global default set. Use 'dartup default <version>' to set one.",
-        "ℹ️".bold()
-    );
+    println!("No global default set. Use 'dartup default <version>' to set one.");
 }
 
 /// Walk up from cwd to find all .dartup/override files
@@ -100,7 +97,7 @@ pub fn set_override(version: &str) -> Result<()> {
     std::fs::write(&override_path, version).context("Failed to write .dartup/override")?;
 
     println!(
-        "✅ Override set: Flutter {} for {}",
+        "Override set: Flutter {} for {}",
         version.green().bold(),
         cwd.display()
     );
@@ -115,10 +112,7 @@ pub fn list_overrides() -> Result<()> {
     let overrides = find_overrides(&cwd);
 
     if overrides.is_empty() {
-        println!(
-            "{} No overrides found in current or parent directories.",
-            "ℹ️".bold()
-        );
+        println!("No overrides found in current or parent directories.");
         return Ok(());
     }
 
@@ -127,17 +121,17 @@ pub fn list_overrides() -> Result<()> {
         let is_active = path == &cwd;
         if is_active {
             println!(
-                "  {} → {} {}",
+                "  {} -> {} {}",
                 path.display(),
                 version.green().bold(),
                 "(current)".green()
             );
         } else {
-            println!("  {} → {}", path.display(), version.bold());
+            println!("  {} -> {}", path.display(), version.bold());
         }
     }
     println!(
-        "\nNearest override: {} → {}",
+        "\nNearest override: {} -> {}",
         overrides[0].0.display(),
         overrides[0].1.green().bold()
     );

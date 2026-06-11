@@ -30,23 +30,23 @@ pub enum Artifact {
     HostDevTools,
     /// Engine binary for the host platform (linux-x64, darwin-x64, windows-x64)
     HostEngine,
-    /// Android engine — ARM 32-bit
+    /// Android engine -- ARM 32-bit
     AndroidEngineArm,
-    /// Android engine — ARM 64-bit
+    /// Android engine -- ARM 64-bit
     AndroidEngineArm64,
-    /// Android engine — x86 32-bit
+    /// Android engine -- x86 32-bit
     AndroidEngineX86,
-    /// Android engine — x86 64-bit
+    /// Android engine -- x86 64-bit
     AndroidEngineX64,
     /// iOS device engine framework (arm64)
     IosEngine,
     /// iOS simulator engine framework
     IosSimulator,
-    /// Web engine — CanvasKit renderer
+    /// Web engine -- CanvasKit renderer
     WebEngineCanvaskit,
-    /// Web engine — Skwasm renderer
+    /// Web engine -- Skwasm renderer
     WebEngineSkwasm,
-    /// Web engine — HTML renderer
+    /// Web engine -- HTML renderer
     WebEngineHtml,
     /// Linux desktop engine
     DesktopLinux,
@@ -60,7 +60,7 @@ pub enum Artifact {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "profile", content = "components")]
 pub enum Profile {
-    /// Core Flutter SDK only — no engine
+    /// Core Flutter SDK only -- no engine
     #[serde(rename = "minimal")]
     Minimal,
     /// SDK + engine for current platform

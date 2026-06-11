@@ -39,7 +39,7 @@ pub fn fetch(remote_url: &str, refspecs: &[&str]) -> Result<()> {
     let mut fo = git2::FetchOptions::new();
     fo.download_tags(git2::AutotagOption::None);
 
-    // Only fetch missing objects — prune is off so we accumulate refs
+    // Only fetch missing objects -- prune is off so we accumulate refs
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.transfer_progress(|stats| {
         if stats.received_objects() > 0 && stats.received_objects() == stats.indexed_objects() {
@@ -60,7 +60,7 @@ pub fn fetch(remote_url: &str, refspecs: &[&str]) -> Result<()> {
 /// Tries the version as a tag first, then as a branch. Returns an error if neither
 /// ref exists on the remote, allowing callers to fall back to the wide refspec fetch.
 ///
-/// Each refspec is tried in a separate `git fetch` call — git refuses the entire
+/// Each refspec is tried in a separate `git fetch` call -- git refuses the entire
 /// operation if *any* refspec in a batch fails to match a remote ref, so we cannot
 /// combine them in a single command.
 pub fn fetch_single_ref(remote_url: &str, version: &str) -> Result<()> {
@@ -98,7 +98,7 @@ pub fn fetch_single_ref(remote_url: &str, version: &str) -> Result<()> {
 /// Sets up alternates so objects are shared, not duplicated.
 ///
 /// First tries a targeted shallow fetch (`fetch_single_ref`) that downloads only
-/// the objects reachable from the single requested tag or branch (~150–200 MiB
+/// the objects reachable from the single requested tag or branch (~150-200 MiB
 /// for Flutter). Falls back to the wide refspec fetch (`+refs/heads/* +refs/tags/*`)
 /// which downloads the full history (~1.44 GiB) if the targeted fetch fails.
 pub fn clone_via_cache(version: &str, remote_url: &str) -> Result<PathBuf> {
@@ -254,7 +254,7 @@ mod tests {
         // Create a source bare repo with some content
         let source_dir = tmp.join("source.git");
         let source = git2::Repository::init_bare(&source_dir).unwrap();
-        // We need a tree to create refs — create a bare repo with initial commit
+        // We need a tree to create refs -- create a bare repo with initial commit
         drop(source);
 
         // Init a non-bare repo, make a commit, push to source
@@ -296,7 +296,7 @@ mod tests {
         drop(remote);
         drop(repo);
 
-        // Verify objects were fetched — there should be at least one object
+        // Verify objects were fetched -- there should be at least one object
         let cache = git2::Repository::open_bare(&cache_dir).unwrap();
         let head = cache.refname_to_id("refs/heads/main");
         assert!(head.is_ok(), "should have fetched refs/heads/main");
@@ -687,7 +687,7 @@ mod tests {
         let cache = git2::Repository::init_bare(&cache_dir).unwrap();
         drop(cache);
 
-        // This refspec won't match anything — git should fail
+        // This refspec won't match anything -- git should fail
         let output = std::process::Command::new("git")
             .args([
                 OsStr::new("--git-dir"),

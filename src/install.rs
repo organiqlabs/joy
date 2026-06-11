@@ -114,10 +114,10 @@ pub fn install_version(version: &str, force: bool, profile: &Profile) -> Result<
         || env_dir.join("bin").join("flutter.bat").exists()
     {
         if !force {
-            println!("✅ Version {version} is already installed. Use --force to reinstall.");
+            println!("Version {version} is already installed. Use --force to reinstall.");
             return Ok(());
         }
-        println!("♻️  Reinstalling {version}...");
+        println!("Reinstalling {version}...");
         std::fs::remove_dir_all(&env_dir)?;
     }
 
@@ -125,16 +125,16 @@ pub fn install_version(version: &str, force: bool, profile: &Profile) -> Result<
     let release = releases::find_release(version)?;
     let download_url = &release.archive_url;
 
-    println!("📦 Installing Flutter {version} ({})", release.channel);
+    println!("Installing Flutter {version} ({})", release.channel);
 
     // Warn when profile expects a smaller download but archive path always gets the full tarball
     if !profile.includes_engine() {
         println!(
-            "⚠️  Profile doesn't include engine, but the full release archive (~1.44 GiB) \
+            "Profile doesn't include engine, but the full release archive (~1.44 GiB) \
             will still be downloaded."
         );
         println!(
-            "   💡 Use `dartup toolchain install {version} --git --profile minimal` \
+            "   Tip: Use `dartup toolchain install {version} --git --profile minimal` \
             to shallow-clone only the SDK source (~150-200 MiB)."
         );
     }
@@ -189,15 +189,15 @@ pub fn install_version(version: &str, force: bool, profile: &Profile) -> Result<
         if engine_path.exists() {
             match engine_cache::adopt_engine_dir(&env_dir, &engine_ver) {
                 Ok(()) => {
-                    println!("🔗 Engine {engine_ver} cached globally (shared across versions)");
+                    println!("Engine {engine_ver} cached globally (shared across versions)");
                 }
-                Err(e) => eprintln!("⚠️  Could not adopt engine: {e}"),
+                Err(e) => eprintln!("Could not adopt engine: {e}"),
             }
         }
     }
 
     println!(
-        "✅ Flutter {version} installed successfully at {}",
+        "Flutter {version} installed successfully at {}",
         env_dir.display()
     );
     Ok(())
@@ -216,15 +216,15 @@ pub fn install_version_git_with_profile(
         || env_dir.join("bin").join("flutter.bat").exists()
     {
         if !force {
-            println!("✅ Version {version} is already installed. Use --force to reinstall.");
+            println!("Version {version} is already installed. Use --force to reinstall.");
             return Ok(());
         }
-        println!("♻️  Reinstalling {version}...");
+        println!("Reinstalling {version}...");
         std::fs::remove_dir_all(&env_dir)?;
     }
 
     let remote = repo_url.unwrap_or("https://github.com/flutter/flutter.git");
-    println!("📦 Creating lightweight toolchain for Flutter {version}...");
+    println!("Creating lightweight toolchain for Flutter {version}...");
 
     // Creates a git worktree referencing the central bare repo via .git file
     git_cache::clone_via_cache(version, remote)?;
@@ -232,7 +232,7 @@ pub fn install_version_git_with_profile(
     // Verify the worktree is lightweight (.git is a file, not a dir)
     let git_link = env_dir.join(".git");
     if !git_link.is_file() {
-        eprintln!("⚠️  Toolchain is not a lightweight worktree (.git is a directory)");
+        eprintln!("Toolchain is not a lightweight worktree (.git is a directory)");
     }
 
     if let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir) {
@@ -241,7 +241,7 @@ pub fn install_version_git_with_profile(
                 Artifact::FlutterFramework | Artifact::HostDevTools => (),
                 Artifact::HostEngine => {
                     if !engine_cache::engine_dir(&engine_ver).exists() {
-                        println!("⚙️  Downloading engine {engine_ver}...");
+                        println!("Downloading engine {engine_ver}...");
                         let engine_clone = engine_ver.clone();
                         let engine_task = std::thread::spawn(move || {
                             engine_cache::download_engine(&engine_clone)
@@ -249,11 +249,11 @@ pub fn install_version_git_with_profile(
                         let result = engine_task
                             .join()
                             .map_err(|_| anyhow::anyhow!("Engine download thread panicked"))??;
-                        println!("⚙️  Engine cached at {}", result.display());
+                        println!("Engine cached at {}", result.display());
                     }
 
                     if let Err(e) = engine_cache::symlink_engine(&env_dir, &engine_ver) {
-                        eprintln!("⚠️  Could not symlink engine: {e}");
+                        eprintln!("Could not symlink engine: {e}");
                     }
                 }
                 _ => {
@@ -272,7 +272,7 @@ pub fn install_version_git_with_profile(
                                 engine_cache::symlink_dir(&cached, &target).ok();
                             }
                             Err(e) => {
-                                eprintln!("⚠️  Could not download {:?}: {e}", artifact);
+                                eprintln!("Could not download {:?}: {e}", artifact);
                             }
                         }
                     }
@@ -285,7 +285,7 @@ pub fn install_version_git_with_profile(
     toolchain_meta::save_profile(version, profile).ok();
 
     println!(
-        "✅ Flutter {version} installed at {} (lightweight worktree)",
+        "Flutter {version} installed at {} (lightweight worktree)",
         env_dir.display()
     );
     Ok(())
@@ -311,7 +311,7 @@ mod tests {
 
     impl Drop for XdgGuard {
         fn drop(&mut self) {
-            // SAFETY: test env vars — cleaned up on drop
+            // SAFETY: test env vars -- cleaned up on drop
             unsafe {
                 std::env::remove_var("XDG_DATA_HOME");
                 std::env::remove_var("XDG_CACHE_HOME");
@@ -382,7 +382,7 @@ mod tests {
         let remote_dir = temp_dir();
         create_test_repo(&remote_dir, tag, engine_ver);
 
-        // Use minimal profile — engine should NOT be downloaded
+        // Use minimal profile -- engine should NOT be downloaded
         super::install_version_git_with_profile(
             tag,
             Some(remote_dir.to_str().unwrap()),
@@ -413,7 +413,7 @@ mod tests {
         create_test_repo(&remote_dir, tag, engine_ver);
         pre_populate_engine(engine_ver);
 
-        // Default profile — engine should be symlinked
+        // Default profile -- engine should be symlinked
         super::install_version_git_with_profile(
             tag,
             Some(remote_dir.to_str().unwrap()),

@@ -21,9 +21,6 @@ use std::str::FromStr;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // One-time migration from legacy ~/.dartup/ to XDG directories
-    config::migrate_if_needed()?;
-
     // Ensure directories exist on startup
     std::fs::create_dir_all(config::envs_dir())?;
     std::fs::create_dir_all(engine_cache::cache_dir())?;
