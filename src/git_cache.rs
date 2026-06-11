@@ -29,46 +29,6 @@ pub fn open_cache_repo() -> Result<git2::Repository> {
     git2::Repository::open_bare(git_cache_path()).context("Failed to open git cache repository")
 }
 
-/// Returns the path to the alternates file inside a toolchain's .git directory.
-fn alternates_path(env_dir: &Path) -> PathBuf {
-    env_dir
-        .join(".git")
-        .join("objects")
-        .join("info")
-        .join("alternates")
-}
-
-/// Configure a toolchain to use the central cache via Git alternates.
-/// Writes the absolute path of the cache's objects directory into
-/// `<env_dir>/.git/objects/info/alternates`.
-pub fn setup_alternates(env_dir: &Path) -> Result<()> {
-    let alt_path = alternates_path(env_dir);
-    if let Some(parent) = alt_path.parent() {
-        std::fs::create_dir_all(parent).context("Failed to create .git/objects/info directory")?;
-    }
-    let cache_objects = git_cache_path()
-        .join("objects")
-        .canonicalize()
-        .unwrap_or_else(|_| git_cache_path().join("objects"));
-    std::fs::write(&alt_path, cache_objects.to_string_lossy().as_bytes())
-        .context("Failed to write alternates file")?;
-    Ok(())
-}
-
-/// Check whether a toolchain has alternates configured.
-pub fn has_alternates(env_dir: &Path) -> bool {
-    alternates_path(env_dir).exists()
-}
-
-/// Remove the alternates file from a toolchain.
-pub fn remove_alternates(env_dir: &Path) -> Result<()> {
-    let alt_path = alternates_path(env_dir);
-    if alt_path.exists() {
-        std::fs::remove_file(&alt_path).context("Failed to remove alternates file")?;
-    }
-    Ok(())
-}
-
 /// Fetch objects from a remote into the central cache.
 /// Only objects not already in the cache are transferred.
 pub fn fetch(remote_url: &str, refspecs: &[&str]) -> Result<()> {
@@ -222,83 +182,12 @@ fn create_lightweight_toolchain(env_dir: &Path, version: &str) -> Result<PathBuf
 }
 
 /// Calculate total size of the git object cache on disk.
-pub fn cache_size() -> Result<u64> {
+pub fn cache_size() -> u64 {
     let path = git_cache_path();
     if !path.exists() {
-        return Ok(0);
+        return 0;
     }
-    Ok(crate::util::dir_size(&path))
-}
-
-/// List Git tags available on a remote repository using `git ls-remote --tags`.
-/// Returns tag names (without the "refs/tags/" prefix).
-pub fn list_remote_tags(repo_url: &str) -> Result<Vec<String>> {
-    let output = std::process::Command::new("git")
-        .args(["ls-remote", "--tags", repo_url])
-        .output()
-        .context("Failed to run git ls-remote --tags")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git ls-remote --tags failed for {repo_url}:\n{stderr}");
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut tags: Vec<String> = stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(2, '\t').collect();
-            if parts.len() != 2 {
-                return None;
-            }
-            let refspec = parts[1];
-            // Parse "refs/tags/v3.29.0" -> "v3.29.0"
-            // Peeled refs (refs/tags/v3.29.0^{}) are duplicates — skip them
-            if refspec.ends_with("^{}") {
-                return None;
-            }
-            refspec.strip_prefix("refs/tags/").map(|n| n.to_string())
-        })
-        .collect();
-
-    tags.sort();
-    tags.dedup();
-    Ok(tags)
-}
-
-/// Fetch objects from a remote into the central cache with a depth limit
-/// (shallow fetch). `depth` must be >= 1.
-pub fn fetch_depth(remote_url: &str, depth: i32) -> Result<()> {
-    if depth < 1 {
-        anyhow::bail!("fetch depth must be >= 1, got {depth}");
-    }
-
-    // Ensure cache is initialized, then use git CLI for shallow fetch
-    // (git2 doesn't support --depth in this version)
-    let git_cache = git_cache_path();
-    ensure_initialized()?;
-    let refspecs = &["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"];
-
-    let output = std::process::Command::new("git")
-        .args([
-            OsStr::new("--git-dir"),
-            OsStr::new(git_cache.to_str().unwrap()),
-            OsStr::new("fetch"),
-            OsStr::new("--depth"),
-            OsStr::new(&depth.to_string()),
-            OsStr::new(remote_url),
-            OsStr::new(refspecs[0]),
-            OsStr::new(refspecs[1]),
-        ])
-        .output()
-        .context("Failed to run git fetch --depth")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git fetch --depth failed:\n{stderr}");
-    }
-
-    Ok(())
+    crate::util::dir_size(&path)
 }
 
 /// Remove all cached bare repo data and reinitialize.
@@ -354,77 +243,6 @@ mod tests {
         let opened = git2::Repository::open_bare(&cache_dir).unwrap();
         assert!(opened.is_bare(), "repo should be bare");
         drop(opened);
-
-        fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn test_setup_alternates_writes_correct_path() {
-        let tmp = temp_dir();
-        let cache_objects = tmp.join("cache").join("objects");
-        fs::create_dir_all(&cache_objects).unwrap();
-        let git_dir = tmp.join("envs").join("test_version").join(".git");
-        let alternates = git_dir.join("objects").join("info").join("alternates");
-
-        // Write alternates as setup_alternates would
-        if let Some(parent) = alternates.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(&alternates, cache_objects.to_string_lossy().as_bytes()).unwrap();
-
-        assert!(alternates.exists(), "alternates file should exist");
-        let content = fs::read_to_string(&alternates).unwrap();
-        let expected = cache_objects.to_string_lossy().to_string();
-        assert_eq!(content, expected);
-
-        fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn test_has_alternates_detects_presence() {
-        let tmp = temp_dir();
-        let env_dir = tmp.join("envs").join("ver");
-        let alt = env_dir
-            .join(".git")
-            .join("objects")
-            .join("info")
-            .join("alternates");
-
-        assert!(
-            !has_alternates(&env_dir),
-            "should return false when no alternates"
-        );
-
-        fs::create_dir_all(alt.parent().unwrap()).unwrap();
-        fs::write(&alt, b"/some/path").unwrap();
-
-        assert!(
-            has_alternates(&env_dir),
-            "should return true when alternates exist"
-        );
-
-        fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn test_remove_alternates_cleans_up() {
-        let tmp = temp_dir();
-        let env_dir = tmp.join("envs").join("ver");
-        let alt = env_dir
-            .join(".git")
-            .join("objects")
-            .join("info")
-            .join("alternates");
-
-        fs::create_dir_all(alt.parent().unwrap()).unwrap();
-        fs::write(&alt, b"/some/path").unwrap();
-        assert!(alt.exists());
-
-        remove_alternates(&env_dir).unwrap();
-        assert!(!alt.exists(), "alternates should be removed");
-
-        // Should be idempotent
-        remove_alternates(&env_dir).unwrap();
 
         fs::remove_dir_all(&tmp).unwrap();
     }
@@ -694,168 +512,13 @@ mod tests {
 
         // direct test
         assert!(!path.exists());
-        let _size = super::cache_size().unwrap_or(0);
+        let _size = super::cache_size();
         // Our function uses config::git_cache_dir(), which won't be our tmp.
         // So just verify the manual dir_size returns 0 for nonexistent
         assert_eq!(crate::util::dir_size(&path), 0);
 
         fs::remove_dir_all(&tmp).unwrap();
     }
-
-    // ---- RED: tag listing tests ----
-
-    #[test]
-    fn test_list_remote_tags_returns_tags() {
-        let tmp = temp_dir();
-
-        // Create a source repo with tags
-        let src_dir = tmp.join("source");
-        let src = git2::Repository::init(&src_dir).unwrap();
-        std::fs::write(src_dir.join("README.md"), b"# Test").unwrap();
-        {
-            let sig = git2::Signature::now("test", "test@test.com").unwrap();
-            let mut index = src.index().unwrap();
-            index.add_path(std::path::Path::new("README.md")).unwrap();
-            index.write().unwrap();
-            let tree_id = index.write_tree().unwrap();
-            let tree = src.find_tree(tree_id).unwrap();
-            let oid = src
-                .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-                .unwrap();
-            let commit = src.find_commit(oid).unwrap();
-            src.tag("v3.29.0", commit.as_object(), &sig, "v3.29.0", false)
-                .unwrap();
-            src.tag("v3.28.0", commit.as_object(), &sig, "v3.28.0", false)
-                .unwrap();
-            src.tag("v3.27.0", commit.as_object(), &sig, "v3.27.0", false)
-                .unwrap();
-        }
-        drop(src);
-
-        // Call list_remote_tags on the local repo
-        let tags = super::list_remote_tags(src_dir.to_str().unwrap()).unwrap();
-        assert!(
-            tags.contains(&"v3.29.0".to_string()),
-            "should contain v3.29.0, got: {tags:?}"
-        );
-        assert!(
-            tags.contains(&"v3.28.0".to_string()),
-            "should contain v3.28.0"
-        );
-        assert!(
-            tags.contains(&"v3.27.0".to_string()),
-            "should contain v3.27.0"
-        );
-        assert_eq!(tags.len(), 3);
-
-        fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn test_list_remote_tags_returns_empty_for_no_tags() {
-        let tmp = temp_dir();
-        let src_dir = tmp.join("empty");
-        let src = git2::Repository::init(&src_dir).unwrap();
-        std::fs::write(src_dir.join("file"), b"data").unwrap();
-        {
-            let sig = git2::Signature::now("test", "test@test.com").unwrap();
-            let mut index = src.index().unwrap();
-            index.add_path(std::path::Path::new("file")).unwrap();
-            index.write().unwrap();
-            let tree_id = index.write_tree().unwrap();
-            let tree = src.find_tree(tree_id).unwrap();
-            src.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-                .unwrap();
-        }
-        drop(src);
-
-        let tags = super::list_remote_tags(src_dir.to_str().unwrap()).unwrap();
-        assert!(
-            tags.is_empty(),
-            "should be empty for repo with no tags, got: {tags:?}"
-        );
-
-        fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn test_list_remote_tags_fails_for_nonexistent_repo() {
-        let result = super::list_remote_tags("/nonexistent/path/for/sure");
-        assert!(result.is_err(), "should fail for nonexistent path");
-    }
-
-    // ---- RED: shallow fetch tests ----
-
-    #[test]
-    fn test_fetch_depth_succeeds() {
-        let tmp = temp_dir();
-
-        // Create source bare repo with a commit and branch
-        let src_dir = tmp.join("source.git");
-        let src = git2::Repository::init_bare(&src_dir).unwrap();
-        drop(src);
-
-        // Clone, make a commit, push
-        let work_dir = tmp.join("work");
-        let work = git2::Repository::init(&work_dir).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        std::fs::write(work_dir.join("f.txt"), b"data").unwrap();
-        {
-            let mut index = work.index().unwrap();
-            index.add_path(std::path::Path::new("f.txt")).unwrap();
-            index.write().unwrap();
-            let tree = work.find_tree(index.write_tree().unwrap()).unwrap();
-            work.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-                .unwrap();
-        }
-        {
-            let mut remote = work.remote_anonymous(src_dir.to_str().unwrap()).unwrap();
-            let mut push_opts = git2::PushOptions::new();
-            remote
-                .push(&["refs/heads/main:refs/heads/main"], Some(&mut push_opts))
-                .unwrap();
-        }
-        drop(work);
-
-        // Create a cache bare repo and fetch with depth=1
-        let cache_dir = tmp.join("cache.git");
-        let cache = git2::Repository::init_bare(&cache_dir).unwrap();
-        drop(cache);
-
-        let output = std::process::Command::new("git")
-            .args([
-                OsStr::new("--git-dir"),
-                OsStr::new(cache_dir.to_str().unwrap()),
-                OsStr::new("fetch"),
-                OsStr::new("--depth"),
-                OsStr::new("1"),
-                OsStr::new(src_dir.to_str().unwrap()),
-                OsStr::new("+refs/heads/*:refs/heads/*"),
-                OsStr::new("+refs/tags/*:refs/tags/*"),
-            ])
-            .output()
-            .expect("git fetch --depth");
-        assert!(
-            output.status.success(),
-            "fetch depth failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        // Verify refs are present
-        let opened = git2::Repository::open_bare(&cache_dir).unwrap();
-        assert!(opened.refname_to_id("refs/heads/main").is_ok());
-        drop(opened);
-
-        fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn test_fetch_depth_rejects_zero_depth() {
-        let result = super::fetch_depth("https://example.com/repo.git", 0);
-        assert!(result.is_err(), "depth 0 should be rejected");
-    }
-
-    // ---- RED: targeted shallow fetch tests ----
 
     #[test]
     fn test_fetch_single_refspec_creates_shallow_clone() {

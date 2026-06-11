@@ -35,7 +35,7 @@ pub fn set_default(version: &str) -> Result<()> {
 }
 
 /// Show the current global default
-pub fn show_default() -> Result<()> {
+pub fn show_default() {
     let global_path = config::global_default_path();
     if global_path.is_symlink()
         && let Ok(target) = std::fs::read_link(&global_path)
@@ -47,13 +47,12 @@ pub fn show_default() -> Result<()> {
             name.to_string_lossy().green().bold(),
             target.display()
         );
-        return Ok(());
+        return;
     }
     println!(
         "{} No global default set. Use 'dartup default <version>' to set one.",
         "ℹ️".bold()
     );
-    Ok(())
 }
 
 /// Walk up from cwd to find all .dartup/override files

@@ -13,16 +13,6 @@ pub fn engine_dir(engine_version: &str) -> PathBuf {
     cache_dir().join(engine_version)
 }
 
-/// Validate that an engine version hash has a safe format:
-/// alphanumeric + underscore + hyphen only, 6–40 characters.
-pub fn is_valid_engine_hash(hash: &str) -> bool {
-    if hash.len() < 6 || hash.len() > 40 {
-        return false;
-    }
-    hash.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
 /// Read the engine version string from an installed Flutter SDK
 pub fn read_engine_version(env_dir: &Path) -> Result<String> {
     let version_file = env_dir.join("bin").join("internal").join("engine.version");
@@ -75,21 +65,6 @@ pub fn symlink_engine(env_dir: &Path, engine_version: &str) -> Result<()> {
     }
 
     symlink_engine_to(env_dir, &engine_cache_path, engine_version)
-}
-
-/// Remove engine symlinks from a toolchain (restores a real directory).
-pub fn remove_engine_symlinks(env_dir: &Path) -> Result<()> {
-    let engine_link = env_dir.join("bin").join("cache").join("engine");
-    if engine_link.is_symlink() {
-        std::fs::remove_file(&engine_link)?;
-    }
-    Ok(())
-}
-
-/// Check if a toolchain's engine is symlinked to the central cache.
-pub fn is_symlinked(env_dir: &Path) -> bool {
-    let engine_link = env_dir.join("bin").join("cache").join("engine");
-    engine_link.is_symlink()
 }
 
 /// List engine versions cached in the central store.
@@ -517,44 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlinked_detects_symlinked_engine() {
-        let tmp = temp_dir();
-        let env_dir = tmp.join("envs").join("ver");
-        let engine_link = env_dir.join("bin").join("cache").join("engine");
-
-        assert!(!is_symlinked(&env_dir), "should be false when absent");
-
-        std::fs::create_dir_all(engine_link.parent().unwrap()).unwrap();
-        std::fs::write(&engine_link, b"not-a-symlink").unwrap();
-        assert!(!is_symlinked(&env_dir), "should be false for regular file");
-
-        std::fs::remove_file(&engine_link).unwrap();
-        symlink_dir(&tmp, &engine_link).unwrap();
-        assert!(is_symlinked(&env_dir), "should be true for symlink");
-
-        std::fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn test_remove_engine_symlinks_cleans_up() {
-        let tmp = temp_dir();
-        let env_dir = tmp.join("envs").join("ver");
-        let engine_link = env_dir.join("bin").join("cache").join("engine");
-
-        std::fs::create_dir_all(engine_link.parent().unwrap()).unwrap();
-        symlink_dir(&tmp, &engine_link).unwrap();
-        assert!(engine_link.is_symlink());
-
-        remove_engine_symlinks(&env_dir).unwrap();
-        assert!(!engine_link.exists(), "symlink should be removed");
-
-        // Idempotent
-        remove_engine_symlinks(&env_dir).unwrap();
-
-        std::fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
     fn test_cached_versions_lists_engine_dirs() {
         let tmp = temp_dir();
         let cache_root = tmp.join("engines");
@@ -969,36 +906,6 @@ mod tests {
     }
 
     // ---- RED: Integrity hardening (Phase 6) ----
-
-    #[test]
-    fn test_is_valid_engine_hash_accepts_valid_hashes() {
-        assert!(is_valid_engine_hash("abc123"), "6-char hex");
-        assert!(is_valid_engine_hash("deadbeef12345678"), "longer hex");
-        assert!(is_valid_engine_hash("abc123XYZ"), "mixed case");
-        assert!(is_valid_engine_hash("a-b_c_d"), "dash and underscore");
-        assert!(
-            is_valid_engine_hash("a234567890123456789012345678901234567890"),
-            "40 chars"
-        );
-    }
-
-    #[test]
-    fn test_is_valid_engine_hash_rejects_invalid_hashes() {
-        assert!(!is_valid_engine_hash(""), "empty");
-        assert!(!is_valid_engine_hash("ab"), "too short (5 chars)");
-        assert!(!is_valid_engine_hash("abcde"), "5 chars — too short");
-        assert!(!is_valid_engine_hash("abc def"), "space not allowed");
-        assert!(!is_valid_engine_hash("abc/def"), "slash not allowed");
-        assert!(
-            !is_valid_engine_hash("abc?def"),
-            "question mark not allowed"
-        );
-        assert!(!is_valid_engine_hash("abc\n123"), "newline not allowed");
-        assert!(
-            !is_valid_engine_hash("a2345678901234567890123456789012345678901"),
-            "41 chars"
-        );
-    }
 
     #[test]
     fn test_read_engine_version_rejects_empty_file() {

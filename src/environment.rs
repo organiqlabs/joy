@@ -203,7 +203,7 @@ pub fn run_doctor() -> Result<()> {
     // Git object cache info
     let git_path = git_cache::git_cache_path();
     if git_path.exists() {
-        let git_objects_size = git_cache::cache_size().unwrap_or(0);
+        let git_objects_size = git_cache::cache_size();
         println!(
             "📦 Git object cache: {} at {}",
             human_size(git_objects_size),

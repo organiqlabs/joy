@@ -156,15 +156,6 @@ impl Profile {
             }
         }
     }
-
-    /// Whether the profile includes platform-specific artifacts beyond the engine.
-    pub fn includes_platform_artifacts(&self) -> bool {
-        let comps = self.components();
-        comps.contains(&Component::Android)
-            || comps.contains(&Component::Ios)
-            || comps.contains(&Component::Web)
-            || comps.contains(&Component::Desktop)
-    }
 }
 
 impl FromStr for Profile {
@@ -208,27 +199,6 @@ impl Component {
             Component::Desktop => "desktop",
         }
     }
-
-    /// Parse a component from a string.
-    pub fn from_str(s: &str) -> Option<Component> {
-        match s.to_lowercase().as_str() {
-            "sdk" => Some(Component::Sdk),
-            "engine" => Some(Component::Engine),
-            "android" => Some(Component::Android),
-            "ios" => Some(Component::Ios),
-            "web" => Some(Component::Web),
-            "desktop" => Some(Component::Desktop),
-            _ => None,
-        }
-    }
-}
-
-pub fn parse_custom(s: &str) -> Option<Profile> {
-    let comps: HashSet<Component> = s.split(',').filter_map(Component::from_str).collect();
-    if comps.is_empty() {
-        return None;
-    }
-    Some(Profile::Custom(comps))
 }
 
 #[cfg(test)]
@@ -302,33 +272,6 @@ mod tests {
         assert!(Profile::Full.includes_engine());
     }
 
-    #[test]
-    fn test_minimal_excludes_platform_artifacts() {
-        assert!(!Profile::Minimal.includes_platform_artifacts());
-    }
-
-    #[test]
-    fn test_default_excludes_platform_artifacts() {
-        assert!(!Profile::Default.includes_platform_artifacts());
-    }
-
-    #[test]
-    fn test_full_includes_platform_artifacts() {
-        assert!(Profile::Full.includes_platform_artifacts());
-    }
-
-    #[test]
-    fn test_custom_engine_excludes_platform_artifacts() {
-        let p = Profile::Custom(HashSet::from([Component::Engine]));
-        assert!(!p.includes_platform_artifacts());
-    }
-
-    #[test]
-    fn test_custom_with_android_includes_platform_artifacts() {
-        let p = Profile::Custom(HashSet::from([Component::Android]));
-        assert!(p.includes_platform_artifacts());
-    }
-
     // ---- Parsing ----
 
     #[test]
@@ -357,49 +300,6 @@ mod tests {
         let result = "foo".parse::<Profile>();
         assert!(result.is_err());
     }
-
-    // ---- Component parsing ----
-
-    #[test]
-    fn test_component_from_str_all_variants() {
-        assert_eq!(Component::from_str("sdk"), Some(Component::Sdk));
-        assert_eq!(Component::from_str("engine"), Some(Component::Engine));
-        assert_eq!(Component::from_str("android"), Some(Component::Android));
-        assert_eq!(Component::from_str("ios"), Some(Component::Ios));
-        assert_eq!(Component::from_str("web"), Some(Component::Web));
-        assert_eq!(Component::from_str("desktop"), Some(Component::Desktop));
-    }
-
-    #[test]
-    fn test_component_from_str_invalid() {
-        assert_eq!(Component::from_str("foo"), None);
-        assert_eq!(Component::from_str(""), None);
-    }
-
-    // ---- Custom parsing ----
-
-    #[test]
-    fn test_parse_custom_single_component() {
-        let p = parse_custom("engine").unwrap();
-        assert_eq!(p, Profile::Custom(HashSet::from([Component::Engine])));
-    }
-
-    #[test]
-    fn test_parse_custom_multiple() {
-        let p = parse_custom("engine,android").unwrap();
-        assert_eq!(
-            p,
-            Profile::Custom(HashSet::from([Component::Engine, Component::Android]))
-        );
-    }
-
-    #[test]
-    fn test_parse_custom_empty_returns_none() {
-        assert_eq!(parse_custom(""), None);
-        assert_eq!(parse_custom("foo,bar"), None);
-    }
-
-    // ---- Artifact-based profile mapping (RED: define expected behavior) ----
 
     #[test]
     fn test_minimal_artifacts_include_framework_and_tools() {

@@ -5,7 +5,6 @@ mod engine_cache;
 mod environment;
 mod git_cache;
 mod install;
-mod manifest;
 mod profile;
 mod project;
 mod releases;
@@ -34,7 +33,10 @@ fn main() -> Result<()> {
         Commands::Doctor => environment::run_doctor(),
         Commands::Default { version } => match version {
             Some(v) => toolchain::set_default(&v),
-            None => toolchain::show_default(),
+            None => {
+                toolchain::show_default();
+                Ok(())
+            }
         },
         Commands::Override { command } => match command {
             cli::OverrideCommands::Set { version } => toolchain::set_override(&version),
