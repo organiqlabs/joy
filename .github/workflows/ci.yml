@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install system dependencies
+        run: dnf install -y git rust cargo openssl-devel pkgconf-pkg-config
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: cargo test --verbose

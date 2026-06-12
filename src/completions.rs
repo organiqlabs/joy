@@ -337,6 +337,7 @@ mod tests {
         let tmp = temp_dir();
         unsafe {
             std::env::set_var("ZSH_CUSTOM", &tmp);
+            std::env::remove_var("ZSH");
         }
         assert!(!is_completions_installed(ShellVariant::Zsh));
         unsafe {

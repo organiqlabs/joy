@@ -264,7 +264,7 @@ mod tests {
             let sig = git2::Signature::now("test", "test@test.com").unwrap();
             let tree_id = work.index().unwrap().write_tree().unwrap();
             let tree = work.find_tree(tree_id).unwrap();
-            work.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            work.commit(Some("refs/heads/main"), &sig, &sig, "initial", &tree, &[])
                 .unwrap();
         }
         // Push to source
@@ -327,8 +327,15 @@ mod tests {
             index.write().unwrap();
             let tree_id = index.write_tree().unwrap();
             let tree = src.find_tree(tree_id).unwrap();
-            src.commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
-                .unwrap();
+            src.commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "initial commit",
+                &tree,
+                &[],
+            )
+            .unwrap();
         }
         // Push to bare
         {
@@ -437,7 +444,7 @@ mod tests {
             let tree_id = index.write_tree().unwrap();
             let tree = src.find_tree(tree_id).unwrap();
             // Create a tag-like ref
-            src.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            src.commit(Some("refs/heads/main"), &sig, &sig, "initial", &tree, &[])
                 .unwrap();
         }
         {
@@ -721,7 +728,7 @@ mod tests {
             index.add_path(std::path::Path::new("f.txt")).unwrap();
             index.write().unwrap();
             let tree = src.find_tree(index.write_tree().unwrap()).unwrap();
-            src.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            src.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
                 .unwrap();
         }
         drop(src);
