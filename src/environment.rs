@@ -96,7 +96,7 @@ pub fn show_current() -> Result<()> {
     Ok(())
 }
 
-/// Set the global default version
+/// Set the global default version.
 pub fn set_global(version: &str) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
     let env_dir = config::envs_dir().join(version);

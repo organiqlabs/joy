@@ -36,6 +36,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: OverrideCommands,
     },
+    /// Update the currently active toolchain (reinstall or upgrade channel)
+    Update {
+        /// Re-download even if cached
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Manage Flutter SDK toolchains (versions/channels)
     Toolchain {
         #[command(subcommand)]

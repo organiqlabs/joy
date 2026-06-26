@@ -87,6 +87,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Commands::Update { force } => toolchain::update_active(force),
         Commands::Toolchain { command } => match command {
             cli::ToolchainCommands::Install {
                 version,

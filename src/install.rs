@@ -284,6 +284,13 @@ pub fn install_version_git_with_profile(
         eprintln!("Toolchain is not a lightweight worktree (.git is a directory)");
     }
 
+    if let Ok(release) = crate::releases::find_release(version) {
+        let _ = std::fs::write(
+            env_dir.join("bin").join("internal").join("release_branch"),
+            release.channel,
+        );
+    }
+
     if let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir) {
         for artifact in profile.included_artifacts() {
             match artifact {

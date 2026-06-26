@@ -7,6 +7,17 @@ fn profile_sidecar_path(version: &str) -> std::path::PathBuf {
     config::envs_dir().join(version).join(".profile")
 }
 
+/// Load the installation profile from a sidecar JSON file.
+pub fn load_profile(version: &str) -> Option<Profile> {
+    crate::util::validate_version(version).ok()?;
+    let path = profile_sidecar_path(version);
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 /// Save the installation profile to a sidecar JSON file.
 pub fn save_profile(version: &str, profile: &Profile) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{e}"))?;

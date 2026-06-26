@@ -1,5 +1,7 @@
 use crate::config;
 use crate::profile::Profile;
+use crate::releases;
+use crate::toolchain_meta;
 use crate::util::display_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -60,6 +62,133 @@ pub fn show_default() {
         return;
     }
     println!("No global default set. Use 'joy default <version>' to set one.");
+}
+
+/// Resolve the currently active version from override → project config → global default.
+pub fn resolve_active_version() -> Result<String> {
+    let cwd = std::env::current_dir()?;
+
+    // 1. Directory override (.joy/override in cwd or parent dirs)
+    let overrides = find_overrides(&cwd);
+    if let Some((_, version)) = overrides.first() {
+        return Ok(version.clone());
+    }
+
+    // 2. Project config (.joy.json)
+    if let Some(project_version) = crate::project::read_project_version()? {
+        return Ok(project_version);
+    }
+
+    // 3. Global default symlink target name
+    let global_path = config::global_default_path();
+    if global_path.is_symlink()
+        && let Ok(target) = std::fs::read_link(&global_path)
+            && let Some(name) = target.file_name() {
+                return Ok(name.to_string_lossy().to_string());
+            }
+
+    anyhow::bail!("No active toolchain found. Install one with 'joy toolchain install <version>'.")
+}
+
+/// Update the currently active toolchain — upgrade to the latest on the same
+/// channel, or reinstall the current version with --force.
+pub fn update_active(force: bool) -> Result<()> {
+    let version = resolve_active_version()?;
+
+    let profile = toolchain_meta::load_profile(&version).unwrap_or(Profile::Default);
+    let is_git = config::envs_dir().join(&version).join(".git").exists();
+
+    let all_releases = releases::fetch_releases()?;
+
+    // If the version string IS a channel name (e.g. "stable"), just install
+    // the latest — install_version resolves channels to their newest release.
+    if all_releases.iter().any(|r| r.channel == version) {
+        println!("Upgrading Flutter {} to latest...", version);
+        install_with_opts(&version, true, is_git, None, &profile, false)?;
+        crate::environment::set_global(&version)?;
+        return Ok(());
+    }
+
+    // Concrete version — look for a newer release on the same channel
+    let current_release = releases::find_release(&version)?;
+    let channel = &current_release.channel;
+
+    let latest = all_releases
+        .iter()
+        .filter(|r| r.channel == *channel)
+        .max_by_key(|r| &r.release_date);
+
+    if let Some(latest) = latest
+        && latest.version != version {
+            println!(
+                "Upgrading Flutter {} -> {}...",
+                version,
+                latest.version.green().bold()
+            );
+            install_with_opts(&latest.version, true, is_git, None, &profile, false)?;
+            update_active_reference(&version, &latest.version)?;
+            return Ok(());
+        }
+
+    // Already the latest — reinstall only if --force was passed
+    if force {
+        install_with_opts(&version, true, is_git, None, &profile, false)
+    } else {
+        // Still ensure the global default symlink is in place
+        let symlink = config::global_default_path();
+        if !symlink.is_symlink() || !symlink.exists() {
+            // set_global prints the PATH hint when creating the symlink
+            crate::environment::set_global(&version).ok();
+        }
+        println!(
+            "Flutter {} is already the latest on the {} channel. Use --force to reinstall.",
+            version, channel
+        );
+        println!(
+            "   Add {} to your PATH to use 'flutter' and 'dart'.",
+            display_path(symlink.join("bin"))
+        );
+        Ok(())
+    }
+}
+
+/// After an upgrade, update the active reference (override or global default)
+/// to point to the new version.
+fn update_active_reference(old: &str, new: &str) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+
+    // 1. Local directory override
+    let local_override = config::override_path(&cwd);
+    if local_override.exists()
+        && let Ok(content) = std::fs::read_to_string(&local_override)
+            && content.trim() == old {
+                std::fs::write(&local_override, new)?;
+                println!("   Override updated to Flutter {}", new.green().bold());
+                return Ok(());
+            }
+
+    // 2. Parent-directory overrides
+    for (dir, ver) in find_overrides(&cwd) {
+        if ver == old {
+            let op = config::override_path(&dir);
+            std::fs::write(&op, new)?;
+            println!("   Override updated to Flutter {}", new.green().bold());
+            return Ok(());
+        }
+    }
+
+    // 3. Global default symlink
+    let global_path = config::global_default_path();
+    if global_path.is_symlink()
+        && let Ok(target) = std::fs::read_link(&global_path)
+            && let Some(name) = target.file_name()
+                && name == old
+            {
+                crate::environment::set_global(new)?;
+                return Ok(());
+            }
+
+    Ok(())
 }
 
 /// Walk up from cwd to find all .joy/override files
