@@ -8,6 +8,7 @@ use crate::toolchain_meta;
 use crate::util::display_path;
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufWriter, Read};
 use std::path::Path;
@@ -106,6 +107,33 @@ pub(crate) fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     }
 }
 
+/// Verify a file's SHA256 checksum against the expected hex string.
+/// Returns an error if the file doesn't exist or the checksum doesn't match.
+pub(crate) fn verify_sha256(path: &Path, expected_hex: &str) -> Result<()> {
+    let mut file = File::open(path).with_context(|| {
+        format!(
+            "Failed to open {} for checksum verification",
+            path.display()
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .with_context(|| format!("Failed to read {} for checksum", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let actual_hex = hex::encode(hasher.finalize());
+    if actual_hex != expected_hex {
+        anyhow::bail!("Expected SHA256 {}, but got {}", expected_hex, actual_hex);
+    }
+    Ok(())
+}
+
 /// Install a specific Flutter version with a given profile
 pub fn install_version(version: &str, force: bool, profile: &Profile) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -155,6 +183,12 @@ pub fn install_version(version: &str, force: bool, profile: &Profile) -> Result<
 
     // Download
     download_with_progress(download_url, &archive_path)?;
+
+    // Verify SHA256 checksum
+    verify_sha256(&archive_path, &release.sha256).context(format!(
+        "SHA256 mismatch for {} — downloaded file is corrupted or incomplete",
+        release.version
+    ))?;
 
     // Extract
     std::fs::create_dir_all(&env_dir)?;
