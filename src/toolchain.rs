@@ -78,6 +78,7 @@ fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, String)> {
 
 /// Set a directory-specific override (stored in .dartup/override)
 pub fn set_override(version: &str) -> Result<()> {
+    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
     // Verify the version is installed
     let env_dir = config::envs_dir().join(version);
     if !env_dir.join("bin").join("flutter").exists()

@@ -25,6 +25,12 @@ pub fn read_engine_version(env_dir: &Path) -> Result<String> {
     if trimmed.is_empty() {
         anyhow::bail!("engine.version is empty in {}", display_path(&version_file));
     }
+    crate::util::validate_version(&trimmed).map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid engine version in {}: {e}",
+            display_path(&version_file)
+        )
+    })?;
     Ok(trimmed)
 }
 

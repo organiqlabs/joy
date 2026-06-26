@@ -97,6 +97,7 @@ pub fn show_current() -> Result<()> {
 
 /// Set the global default version
 pub fn set_global(version: &str) -> Result<()> {
+    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
     let env_dir = config::envs_dir().join(version);
     if !env_dir.join("bin").join("flutter").exists()
         && !env_dir.join("bin").join("flutter.bat").exists()
@@ -130,6 +131,7 @@ pub fn set_global(version: &str) -> Result<()> {
 
 /// Remove an installed version
 pub fn remove_version(version: &str) -> Result<()> {
+    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
     let env_dir = config::envs_dir().join(version);
     if !env_dir.exists() {
         anyhow::bail!("Flutter {version} is not installed.");

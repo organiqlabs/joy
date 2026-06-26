@@ -108,6 +108,7 @@ pub(crate) fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
 
 /// Install a specific Flutter version with a given profile
 pub fn install_version(version: &str, force: bool, profile: &Profile) -> Result<()> {
+    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
     let env_dir = config::envs_dir().join(version);
 
     // Check if already installed
@@ -211,6 +212,7 @@ pub fn install_version_git_with_profile(
     force: bool,
     profile: &Profile,
 ) -> Result<()> {
+    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
     let env_dir = config::envs_dir().join(version);
 
     if env_dir.join("bin").join("flutter").exists()

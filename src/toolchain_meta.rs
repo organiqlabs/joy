@@ -9,6 +9,7 @@ fn profile_sidecar_path(version: &str) -> std::path::PathBuf {
 
 /// Save the installation profile to a sidecar JSON file.
 pub fn save_profile(version: &str, profile: &Profile) -> Result<()> {
+    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{e}"))?;
     let path = profile_sidecar_path(version);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

@@ -27,6 +27,28 @@ pub fn dir_size(path: impl AsRef<Path>) -> u64 {
     total
 }
 
+/// Validate that a version string is safe to use in filesystem paths.
+/// Rejects empty strings, strings containing path separators, parent directory
+/// references (`..`), and null bytes.
+pub fn validate_version(version: &str) -> Result<(), String> {
+    if version.is_empty() {
+        return Err("Version string must not be empty".to_string());
+    }
+    if version.contains('/') || version.contains('\\') || version.contains('\0') {
+        return Err(format!(
+            "Invalid version '{}': must not contain path separators or null bytes",
+            version
+        ));
+    }
+    if version.contains("..") {
+        return Err(format!(
+            "Invalid version '{}': must not contain parent directory references",
+            version
+        ));
+    }
+    Ok(())
+}
+
 /// Format bytes into a human-readable string
 pub fn human_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
