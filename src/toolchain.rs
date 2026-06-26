@@ -59,10 +59,10 @@ pub fn show_default() {
         );
         return;
     }
-    println!("No global default set. Use 'dartup default <version>' to set one.");
+    println!("No global default set. Use 'joy default <version>' to set one.");
 }
 
-/// Walk up from cwd to find all .dartup/override files
+/// Walk up from cwd to find all .joy/override files
 fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, String)> {
     let mut results = Vec::new();
     let mut dir = Some(cwd);
@@ -83,7 +83,7 @@ fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, String)> {
     results
 }
 
-/// Set a directory-specific override (stored in .dartup/override)
+/// Set a directory-specific override (stored in .joy/override)
 pub fn set_override(version: &str) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
     // Verify the version is installed
@@ -93,19 +93,18 @@ pub fn set_override(version: &str) -> Result<()> {
     if !env_dir.join("bin").join("flutter").exists()
         && !env_dir.join("bin").join("flutter.bat").exists()
     {
-        anyhow::bail!("Flutter {version} is not installed. Run 'dartup install {version}' first.");
+        anyhow::bail!("Flutter {version} is not installed. Run 'joy install {version}' first.");
     }
 
     let cwd = std::env::current_dir()?;
     let override_path = config::override_path(&cwd);
 
-    // Create .dartup directory if needed
+    // Create .joy directory if needed
     if let Some(parent) = override_path.parent() {
-        std::fs::create_dir_all(parent)
-            .context("Failed to create .dartup directory for override")?;
+        std::fs::create_dir_all(parent).context("Failed to create .joy directory for override")?;
     }
 
-    std::fs::write(&override_path, version).context("Failed to write .dartup/override")?;
+    std::fs::write(&override_path, version).context("Failed to write .joy/override")?;
 
     println!(
         "Override set: Flutter {} for {}",
@@ -161,7 +160,7 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("dartup_toolchain_test_{id}"));
+        let dir = std::env::temp_dir().join(format!("joy_toolchain_test_{id}"));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

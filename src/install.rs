@@ -171,7 +171,7 @@ pub fn install_version(
             will still be downloaded."
         );
         println!(
-            "   Tip: Use `dartup toolchain install {version} --git --profile minimal` \
+            "   Tip: Use `joy toolchain install {version} --git --profile minimal` \
             to shallow-clone only the SDK source (~150-200 MiB)."
         );
     }
@@ -351,7 +351,7 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("dartup_e2e_{id}"));
+        let dir = std::env::temp_dir().join(format!("joy_e2e_{id}"));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

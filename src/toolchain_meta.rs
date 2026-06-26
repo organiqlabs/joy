@@ -39,7 +39,7 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("dartup_toolchain_meta_test_{n}"));
+        let dir = std::env::temp_dir().join(format!("joy_toolchain_meta_test_{n}"));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

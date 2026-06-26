@@ -1,6 +1,6 @@
 [package]
-name = "dartup"
-description = "sculpting Dart/Flutter toolchains with light."
+name = "joy"
+description = "sculpting Dart/Flutter toolchains with light"
 version = "0.1.0"
 edition = "2024"
 

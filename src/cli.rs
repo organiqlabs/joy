@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 #[derive(Parser)]
-#[command(name = "dartup", about = "A fast Flutter version manager", version)]
+#[command(name = "joy", about = "A fast Flutter version manager", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -27,7 +27,7 @@ pub enum Commands {
         #[arg(long)]
         engines: bool,
     },
-    /// Check that dartup is set up correctly
+    /// Check that joy is set up correctly
     Doctor,
     /// Set the global default Flutter toolchain (e.g., "3.29.0", "stable")
     Default { version: Option<String> },
@@ -94,7 +94,7 @@ impl From<ShellVariant> for Shell {
 
 #[derive(Subcommand)]
 pub enum OverrideCommands {
-    /// Set a directory-specific override (stored in .dartup/override)
+    /// Set a directory-specific override (stored in .joy/override)
     Set { version: String },
     /// List active overrides in parent directories
     List,

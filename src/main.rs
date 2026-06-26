@@ -64,7 +64,7 @@ fn main() -> Result<()> {
                 generate(
                     Into::<clap_complete::Shell>::into(shell),
                     &mut Cli::command(),
-                    "dartup",
+                    "joy",
                     &mut io::stdout(),
                 );
                 Ok(())

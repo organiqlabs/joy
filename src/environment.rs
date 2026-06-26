@@ -74,7 +74,7 @@ pub fn show_current() -> Result<()> {
     // Check project config first
     if let Some(project_version) = crate::project::read_project_version()? {
         println!(
-            "Project: {} (from .dartup.json)",
+            "Project: {} (from .joy.json)",
             project_version.green().bold()
         );
     }
@@ -90,7 +90,7 @@ pub fn show_current() -> Result<()> {
             );
         }
     } else {
-        println!("No global default set. Use 'dartup use -g <version>' to set one.");
+        println!("No global default set. Use 'joy use -g <version>' to set one.");
     }
 
     Ok(())
@@ -105,7 +105,7 @@ pub fn set_global(version: &str) -> Result<()> {
     if !env_dir.join("bin").join("flutter").exists()
         && !env_dir.join("bin").join("flutter.bat").exists()
     {
-        anyhow::bail!("Flutter {version} is not installed. Run 'dartup install {version}' first.");
+        anyhow::bail!("Flutter {version} is not installed. Run 'joy install {version}' first.");
     }
 
     let global_path = config::global_default_path();
@@ -126,7 +126,7 @@ pub fn set_global(version: &str) -> Result<()> {
 
     println!("Global default set to Flutter {}.", version.green().bold());
     println!(
-        "   Add {} to your PATH to use 'dartup flutter'",
+        "   Add {} to your PATH to use 'joy flutter'",
         display_path(config::envs_dir().join(version).join("bin"))
     );
     Ok(())
@@ -151,16 +151,16 @@ pub fn remove_version(version: &str) -> Result<()> {
 
     std::fs::remove_dir_all(&env_dir)?;
     println!("Removed Flutter {version}.");
-    println!("   (Cached engine artifacts remain. Run 'dartup gc' to free disk space.)");
+    println!("   (Cached engine artifacts remain. Run 'joy gc' to free disk space.)");
     Ok(())
 }
 
 /// Run doctor -- verify installation
 pub fn run_doctor() -> Result<()> {
-    println!("{}", "dartup Doctor".bold());
+    println!("{}", "joy Doctor".bold());
     println!();
 
-    // Check dartup data and cache directories
+    // Check joy data and cache directories
     let data_dir = config::data_root();
     if data_dir.exists() {
         println!("Data directory: {}", display_path(&data_dir));
@@ -231,7 +231,7 @@ pub fn run_doctor() -> Result<()> {
         }
     } else {
         println!(
-            "No global Git object cache. Create one with 'dartup toolchain install --git <version>'"
+            "No global Git object cache. Create one with 'joy toolchain install --git <version>'"
         );
     }
 

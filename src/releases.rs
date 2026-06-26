@@ -203,7 +203,7 @@ pub fn find_release(version: &str) -> Result<ReleaseInfo> {
     }
 
     anyhow::bail!(
-        "Could not find Flutter version '{}'. Run 'dartup releases' to see available versions.",
+        "Could not find Flutter version '{}'. Run 'joy releases' to see available versions.",
         version
     )
 }
@@ -218,7 +218,7 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("dartup_releases_test_{id}"));
+        let dir = std::env::temp_dir().join(format!("joy_releases_test_{id}"));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

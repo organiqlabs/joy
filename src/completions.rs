@@ -80,16 +80,16 @@ pub fn completion_dir_for_shell(shell: ShellVariant) -> PathBuf {
 pub fn install_completions(shell: Shell, cmd: &mut Command, dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(dir).with_context(|| format!("Failed to create {dir:?}"))?;
     let filename = match shell {
-        Shell::Bash => "dartup.bash",
-        Shell::Zsh => "_dartup",
-        Shell::Fish => "dartup.fish",
-        Shell::PowerShell => "_dartup.ps1",
-        Shell::Elvish => "dartup.elv",
+        Shell::Bash => "joy.bash",
+        Shell::Zsh => "_joy",
+        Shell::Fish => "joy.fish",
+        Shell::PowerShell => "_joy.ps1",
+        Shell::Elvish => "joy.elv",
         _ => unreachable!(),
     };
     let dest = dir.join(filename);
     let mut file = fs::File::create(&dest).with_context(|| format!("Failed to create {dest:?}"))?;
-    generate(shell, cmd, "dartup", &mut file);
+    generate(shell, cmd, "joy", &mut file);
     Ok(dest)
 }
 
@@ -109,11 +109,11 @@ pub fn current_shell() -> Option<ShellVariant> {
 /// Check if completions are installed for a given shell.
 pub fn is_completions_installed(shell: ShellVariant) -> bool {
     let filename = match shell {
-        ShellVariant::Bash => "dartup.bash",
-        ShellVariant::Zsh => "_dartup",
-        ShellVariant::Fish => "dartup.fish",
-        ShellVariant::PowerShell => "_dartup.ps1",
-        ShellVariant::Elvish => "dartup.elv",
+        ShellVariant::Bash => "joy.bash",
+        ShellVariant::Zsh => "_joy",
+        ShellVariant::Fish => "joy.fish",
+        ShellVariant::PowerShell => "_joy.ps1",
+        ShellVariant::Elvish => "joy.elv",
     };
 
     if shell == ShellVariant::Zsh {
@@ -136,25 +136,25 @@ pub fn is_completions_installed(shell: ShellVariant) -> bool {
 pub fn install_hint(shell: ShellVariant) -> String {
     match shell {
         ShellVariant::Bash => r#"Add to ~/.bashrc:
-  source <(dartup completions generate bash)"#
+  source <(joy completions generate bash)"#
             .to_string(),
         ShellVariant::Zsh => r#"Run:
-  dartup completions install zsh
+  joy completions install zsh
 Or manually:
   mkdir -p ~/.zsh/completions
-  dartup completions generate zsh > ~/.zsh/completions/_dartup
+  joy completions generate zsh > ~/.zsh/completions/_joy
 Then add to ~/.zshrc:
   fpath=(~/.zsh/completions $fpath)
   autoload -U compinit && compinit"#
             .to_string(),
         ShellVariant::Fish => r#"Run:
-  dartup completions install fish"#
+  joy completions install fish"#
             .to_string(),
         ShellVariant::PowerShell => r#"Add to your profile:
-  dartup completions generate powershell | Out-String | Invoke-Expression"#
+  joy completions generate powershell | Out-String | Invoke-Expression"#
             .to_string(),
         ShellVariant::Elvish => r#"Add to ~/.elvish/rc.elv:
-  eval (dartup completions generate elvish | slurp)"#
+  eval (joy completions generate elvish | slurp)"#
             .to_string(),
     }
     .to_string()
@@ -203,7 +203,7 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("dartup_completions_test_{id}"));
+        let dir = std::env::temp_dir().join(format!("joy_completions_test_{id}"));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -235,12 +235,12 @@ mod tests {
         let mut cmd = Cli::command();
         let dest = install_completions(Shell::Zsh, &mut cmd, &tmp).unwrap();
 
-        assert_eq!(dest.file_name().unwrap(), "_dartup");
+        assert_eq!(dest.file_name().unwrap(), "_joy");
         assert!(dest.exists());
 
         let content = std::fs::read_to_string(&dest).unwrap();
         assert!(
-            content.starts_with("#compdef dartup"),
+            content.starts_with("#compdef joy"),
             "Expected #compdef header, got: {content:.50}"
         );
     }
@@ -251,13 +251,13 @@ mod tests {
         let mut cmd = Cli::command();
         let dest = install_completions(Shell::Bash, &mut cmd, &tmp).unwrap();
 
-        assert_eq!(dest.file_name().unwrap(), "dartup.bash");
+        assert_eq!(dest.file_name().unwrap(), "joy.bash");
         assert!(dest.exists());
 
         let content = std::fs::read_to_string(&dest).unwrap();
         assert!(
-            content.contains("_dartup"),
-            "Expected bash function _dartup, got: {content:.50}"
+            content.contains("_joy"),
+            "Expected bash function _joy, got: {content:.50}"
         );
     }
 
@@ -267,28 +267,25 @@ mod tests {
         let mut cmd = Cli::command();
         let dest = install_completions(Shell::Fish, &mut cmd, &tmp).unwrap();
 
-        assert_eq!(dest.file_name().unwrap(), "dartup.fish");
+        assert_eq!(dest.file_name().unwrap(), "joy.fish");
         assert!(dest.exists());
 
         let content = std::fs::read_to_string(&dest).unwrap();
-        assert!(
-            content.contains("__fish_dartup"),
-            "Expected fish completion"
-        );
+        assert!(content.contains("__fish_joy"), "Expected fish completion");
     }
 
     #[test]
     fn install_overwrites_existing_file() {
         let tmp = temp_dir();
         fs::create_dir_all(&tmp).unwrap();
-        fs::write(tmp.join("_dartup"), b"stale").unwrap();
+        fs::write(tmp.join("_joy"), b"stale").unwrap();
 
         let mut cmd = Cli::command();
         let dest = install_completions(Shell::Zsh, &mut cmd, &tmp).unwrap();
 
         let content = std::fs::read_to_string(&dest).unwrap();
         assert!(
-            content.starts_with("#compdef dartup"),
+            content.starts_with("#compdef joy"),
             "Expected fresh completion"
         );
     }

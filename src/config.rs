@@ -1,26 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Return an XDG base-directories instance scoped to "dartup".
+/// Return an XDG base-directories instance scoped to "joy".
 /// Panics if $HOME is not set.
 fn xdg() -> xdg::BaseDirectories {
-    xdg::BaseDirectories::with_prefix("dartup")
+    xdg::BaseDirectories::with_prefix("joy")
 }
 
 /// Root of user-specific data (installed SDKs, profiles, default symlink).
-/// `$XDG_DATA_HOME/dartup` or `~/.local/share/dartup`.
+/// `$XDG_DATA_HOME/joy` or `~/.local/share/joy`.
 pub fn data_root() -> PathBuf {
-    xdg()
-        .get_data_home()
-        .expect("$HOME must be set to use dartup")
+    xdg().get_data_home().expect("$HOME must be set to use joy")
 }
 
 /// Root of user-specific cache (engine artifacts, git objects, temp downloads).
-/// `$XDG_CACHE_HOME/dartup` or `~/.cache/dartup`.
+/// `$XDG_CACHE_HOME/joy` or `~/.cache/joy`.
 pub fn cache_root() -> PathBuf {
     xdg()
         .get_cache_home()
-        .expect("$HOME must be set to use dartup")
+        .expect("$HOME must be set to use joy")
 }
 
 /// Directory where Flutter SDK versions are installed: `{data_root}/envs`
@@ -54,12 +52,12 @@ pub fn releases_cache_dir() -> PathBuf {
 }
 
 /// Per-project config file name
-pub const PROJECT_CONFIG_FILE: &str = ".dartup.json";
+pub const PROJECT_CONFIG_FILE: &str = ".joy.json";
 
 /// Directory name for override storage
-pub const OVERRIDE_DIR: &str = ".dartup";
+pub const OVERRIDE_DIR: &str = ".joy";
 
-/// Override file name inside .dartup/
+/// Override file name inside .joy/
 pub const OVERRIDE_FILE: &str = "override";
 
 /// Path to the override file for a given project directory
