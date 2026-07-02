@@ -10,6 +10,7 @@ clap_complete = "4.6.5"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
+bstr = "1"
 tar = "0.4.46"
 flate2 = "1.1.9"
 xz2 = "0.1.7"
@@ -21,7 +22,7 @@ anyhow = "1.0.103"
 thiserror = "2.0.18"
 sha2 = "0.11.0"
 hex = "0.4"
-git2 = "0.21.0"
+gix = { version = "0.85.0", features = ["blocking-network-client", "progress-tree"] }
 tokio = { version = "1.52.3", features = ["rt", "macros"] }
 
 [dev-dependencies]

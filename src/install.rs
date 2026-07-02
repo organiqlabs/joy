@@ -275,15 +275,18 @@ pub fn install_version_git_with_profile(
         } else {
             println!("Reinstalling {version}...");
         }
-        git_cache::remove_worktree(version);
+        let cache = git_cache::GitCache::open_or_init()?;
+        cache.remove_worktree(version);
         std::fs::remove_dir_all(&env_dir).ok();
     }
 
     let remote = repo_url.unwrap_or("https://github.com/flutter/flutter.git");
     println!("Creating lightweight toolchain for Flutter {version}...");
 
-    // Creates a git worktree referencing the central bare repo via .git file
-    git_cache::clone_via_cache(version, remote)?;
+    let cache = git_cache::GitCache::open_or_init()?;
+    let ref_kind = cache.discover_ref(remote, version)?;
+    cache.fetch_shallow(remote, version, ref_kind)?;
+    cache.create_worktree(version, &env_dir)?;
 
     // Verify the worktree is lightweight (.git is a file, not a dir)
     let git_link = env_dir.join(".git");
@@ -398,7 +401,15 @@ mod tests {
     }
 
     fn create_test_repo(dir: &Path, tag: &str, engine_ver: &str) {
-        let repo = git2::Repository::init(dir).unwrap();
+        let ts = gix::ThreadSafeRepository::init_opts(
+            dir,
+            gix::create::Kind::WithWorktree,
+            gix::create::Options::default(),
+            gix::open::Options::default(),
+        )
+        .unwrap();
+        let repo: gix::Repository = ts.into();
+
         std::fs::create_dir_all(dir.join("bin").join("internal")).unwrap();
         std::fs::write(dir.join("bin").join("flutter"), b"#!/bin/sh\necho fake").unwrap();
         std::fs::write(dir.join("bin").join("dart"), b"#!/bin/sh\necho fake dart").unwrap();
@@ -408,19 +419,42 @@ mod tests {
         )
         .unwrap();
 
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        let mut index = repo.index().unwrap();
-        index
-            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-            .unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .unwrap();
-        let commit = repo.find_commit(oid).unwrap();
-        repo.tag(tag, commit.as_object(), &sig, tag, false).unwrap();
+        let files: &[(&str, &[u8])] = &[
+            ("bin/flutter", b"#!/bin/sh\necho fake"),
+            ("bin/dart", b"#!/bin/sh\necho fake dart"),
+            ("bin/internal/engine.version", engine_ver.as_bytes()),
+        ];
+
+        let mut tree_entries = Vec::new();
+        for (path, content) in files {
+            let blob_id = repo.write_blob(content).unwrap().detach();
+            tree_entries.push(gix::objs::tree::Entry {
+                mode: gix::objs::tree::EntryKind::Blob.into(),
+                filename: path.as_bytes().into(),
+                oid: blob_id,
+            });
+        }
+        tree_entries.sort_by(|a, b| a.filename.cmp(&b.filename));
+        let tree = gix::objs::Tree {
+            entries: tree_entries,
+        };
+        let tree_id = repo.write_object(&tree).unwrap();
+
+        let sig = gix::actor::SignatureRef {
+            name: "test".into(),
+            email: "test@test.com".into(),
+            time: "0 +0000",
+        };
+
+        repo.commit_as(
+            sig,
+            sig,
+            format!("refs/tags/{tag}"),
+            "initial",
+            tree_id,
+            [] as [gix::hash::ObjectId; 0],
+        )
+        .unwrap();
     }
 
     fn pre_populate_engine(engine_ver: &str) {
@@ -504,22 +538,45 @@ mod tests {
         let tag = "minimal-noeng-v1";
         let (_guard, _data_home, _cache_home) = setup_xdg();
         let remote_dir = temp_dir();
-        let repo = git2::Repository::init(&remote_dir).unwrap();
-        std::fs::create_dir_all(remote_dir.join("bin")).unwrap();
-        std::fs::write(remote_dir.join("bin").join("flutter"), b"#!/bin/sh").unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        let mut index = repo.index().unwrap();
-        index
-            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+        let _repo = {
+            let ts = gix::ThreadSafeRepository::init_opts(
+                &remote_dir,
+                gix::create::Kind::WithWorktree,
+                gix::create::Options::default(),
+                gix::open::Options::default(),
+            )
             .unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "no engine", &tree, &[])
+            let repo: gix::Repository = ts.into();
+            std::fs::create_dir_all(remote_dir.join("bin")).unwrap();
+            std::fs::write(remote_dir.join("bin").join("flutter"), b"#!/bin/sh").unwrap();
+
+            let blob_id = repo.write_blob(b"#!/bin/sh").unwrap().detach();
+            let tree = gix::objs::Tree {
+                entries: vec![gix::objs::tree::Entry {
+                    mode: gix::objs::tree::EntryKind::Blob.into(),
+                    filename: b"bin/flutter".into(),
+                    oid: blob_id,
+                }],
+            };
+            let tree_id = repo.write_object(&tree).unwrap();
+
+            let sig = gix::actor::SignatureRef {
+                name: "test".into(),
+                email: "test@test.com".into(),
+                time: "0 +0000",
+            };
+
+            repo.commit_as(
+                sig,
+                sig,
+                format!("refs/tags/{tag}"),
+                "no engine",
+                tree_id,
+                [] as [gix::hash::ObjectId; 0],
+            )
             .unwrap();
-        let commit = repo.find_commit(oid).unwrap();
-        repo.tag(tag, commit.as_object(), &sig, tag, false).unwrap();
+            repo
+        };
 
         super::install_version_git_with_profile(
             tag,
