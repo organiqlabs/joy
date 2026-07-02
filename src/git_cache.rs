@@ -131,6 +131,7 @@ fn create_lightweight_toolchain(env_dir: &Path, version: &str) -> Result<PathBuf
     }
     // Remove any leftover directory (shouldn't happen, but be safe)
     if env_dir.exists() {
+        remove_worktree(version);
         std::fs::remove_dir_all(env_dir)?;
     }
 
@@ -179,6 +180,58 @@ fn create_lightweight_toolchain(env_dir: &Path, version: &str) -> Result<PathBuf
         "Could not find version '{version}' as a tag or branch.\n{}",
         last_err.as_deref().unwrap_or("unknown error")
     )
+}
+
+/// Check if a worktree's `.git` gitdir: target still exists and is valid.
+/// Returns `false` if the worktree is broken (bare repo was wiped, etc.).
+pub fn worktree_is_valid(version: &str) -> bool {
+    let env_dir = config::envs_dir().join(version);
+    let git_link = env_dir.join(".git");
+
+    if !git_link.is_file() {
+        return false;
+    }
+
+    let content = match std::fs::read_to_string(&git_link) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let gitdir_path = match content.strip_prefix("gitdir: ") {
+        Some(p) => p.trim(),
+        None => return false,
+    };
+
+    std::path::Path::new(gitdir_path).join("HEAD").exists()
+}
+
+/// Remove a worktree by version name from the bare cache.
+/// Runs `git worktree remove --force` and prunes stale entries.
+pub fn remove_worktree(version: &str) {
+    let cache_path = git_cache_path();
+    let env_dir = config::envs_dir().join(version);
+
+    std::process::Command::new("git")
+        .args([
+            OsStr::new("--git-dir"),
+            OsStr::new(cache_path.to_str().unwrap()),
+            OsStr::new("worktree"),
+            OsStr::new("remove"),
+            OsStr::new("--force"),
+            OsStr::new(env_dir.to_str().unwrap()),
+        ])
+        .output()
+        .ok();
+
+    std::process::Command::new("git")
+        .args([
+            OsStr::new("--git-dir"),
+            OsStr::new(cache_path.to_str().unwrap()),
+            OsStr::new("worktree"),
+            OsStr::new("prune"),
+        ])
+        .output()
+        .ok();
 }
 
 /// Calculate total size of the git object cache on disk.
@@ -665,6 +718,95 @@ mod tests {
         );
 
         drop(opened);
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    // --- worktree_is_valid tests ---
+
+    #[test]
+    fn test_worktree_is_valid_returns_false_for_nonexistent_version() {
+        assert!(!worktree_is_valid("definitely-not-installed-v99"));
+    }
+
+    #[test]
+    fn test_worktree_is_valid_checks_gitdir_target() {
+        let tmp = temp_dir();
+        let bare_dir = tmp.join("cache.git");
+        let work_dir = tmp.join("envs").join("3.44.4");
+
+        // Init bare repo with a commit+tag (use git CLI for simplicity)
+        let _ = std::process::Command::new("git")
+            .args(["init", "--bare", bare_dir.to_str().unwrap()])
+            .output();
+
+        let src_dir = tmp.join("source");
+        let _ = std::process::Command::new("git")
+            .args(["init", src_dir.to_str().unwrap()])
+            .output();
+        std::fs::write(src_dir.join("f.txt"), b"data").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["-C", src_dir.to_str().unwrap(), "add", "f.txt"])
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["-C", src_dir.to_str().unwrap(), "commit", "-m", "init"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["-C", src_dir.to_str().unwrap(), "tag", "3.44.4"])
+            .output();
+        let _ = std::process::Command::new("git")
+            .args([
+                "-C",
+                src_dir.to_str().unwrap(),
+                "push",
+                bare_dir.to_str().unwrap(),
+                "--tags",
+            ])
+            .output();
+
+        // Create worktree
+        std::fs::create_dir_all(work_dir.parent().unwrap()).unwrap();
+        let out = std::process::Command::new("git")
+            .args([
+                OsStr::new("--git-dir"),
+                OsStr::new(bare_dir.to_str().unwrap()),
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                OsStr::new("--detach"),
+                OsStr::new(work_dir.to_str().unwrap()),
+                OsStr::new("tags/3.44.4"),
+            ])
+            .output()
+            .expect("git worktree add");
+        assert!(
+            out.status.success(),
+            "worktree add: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Direct check: .git should reference a real path with HEAD
+        let content = std::fs::read_to_string(work_dir.join(".git")).unwrap();
+        assert!(
+            content.starts_with("gitdir: "),
+            ".git should start with gitdir: "
+        );
+        let target = content.strip_prefix("gitdir: ").unwrap().trim();
+        assert!(
+            std::path::Path::new(target).join("HEAD").exists(),
+            "gitdir target should have HEAD"
+        );
+
+        // After wiping bare repo worktree metadata, .git should point to nonexistent
+        fs::remove_dir_all(bare_dir.join("worktrees")).unwrap();
+        assert!(
+            !std::path::Path::new(target).join("HEAD").exists(),
+            "after wipe, gitdir target should no longer have HEAD"
+        );
+
         fs::remove_dir_all(&tmp).unwrap();
     }
 

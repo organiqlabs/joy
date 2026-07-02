@@ -261,15 +261,22 @@ pub fn install_version_git_with_profile(
     crate::util::check_path_traversal(&env_dir, &config::envs_dir())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    if env_dir.join("bin").join("flutter").exists()
-        || env_dir.join("bin").join("flutter.bat").exists()
-    {
-        if !force {
+    let already_installed = env_dir.join("bin").join("flutter").exists()
+        || env_dir.join("bin").join("flutter.bat").exists();
+    let is_broken_worktree = already_installed && !git_cache::worktree_is_valid(version);
+
+    if already_installed {
+        if !force && !is_broken_worktree {
             println!("Version {version} is already installed. Use --force to reinstall.");
             return Ok(());
         }
-        println!("Reinstalling {version}...");
-        std::fs::remove_dir_all(&env_dir)?;
+        if is_broken_worktree {
+            println!("Worktree for {version} is broken (git cache was cleared). Reinstalling...");
+        } else {
+            println!("Reinstalling {version}...");
+        }
+        git_cache::remove_worktree(version);
+        std::fs::remove_dir_all(&env_dir).ok();
     }
 
     let remote = repo_url.unwrap_or("https://github.com/flutter/flutter.git");
@@ -528,5 +535,116 @@ mod tests {
             env_dir.join("bin").join("flutter").exists(),
             "flutter binary should exist even with minimal profile"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_auto_repair_broken_worktree() {
+        let tag = "repair-test-v1";
+        let engine_ver = "repair-engine";
+
+        let (_guard, _data_home, _cache_home) = setup_xdg();
+        let remote_dir = temp_dir();
+        create_test_repo(&remote_dir, tag, engine_ver);
+
+        // First install
+        super::install_version_git_with_profile(
+            tag,
+            Some(remote_dir.to_str().unwrap()),
+            false,
+            &crate::profile::Profile::Minimal,
+            false,
+        )
+        .unwrap();
+
+        let env_dir = config::envs_dir().join(tag);
+        assert!(
+            git_cache::worktree_is_valid(tag),
+            "worktree should be valid after fresh install"
+        );
+
+        // Wipe the bare repo (simulate cache clear or system cleanup)
+        let cache_path = crate::config::git_cache_dir();
+        assert!(cache_path.exists(), "cache should exist after install");
+        crate::git_cache::clear_cache().unwrap();
+
+        // Verify worktree is now detected as broken
+        assert!(
+            !git_cache::worktree_is_valid(tag),
+            "worktree should be broken after cache clear"
+        );
+        assert!(
+            env_dir.join("bin").join("flutter").exists(),
+            "SDK files should still exist even with broken .git"
+        );
+
+        // Re-install WITHOUT --force — should auto-detect broken worktree and repair
+        super::install_version_git_with_profile(
+            tag,
+            Some(remote_dir.to_str().unwrap()),
+            false, // no --force
+            &crate::profile::Profile::Minimal,
+            false,
+        )
+        .unwrap();
+
+        // Verify worktree is repaired
+        assert!(
+            git_cache::worktree_is_valid(tag),
+            "worktree should be valid after auto-repair"
+        );
+        assert!(
+            env_dir.join("bin").join("flutter").exists(),
+            "flutter binary should exist after repair"
+        );
+
+        // Verify git operations work from the repaired worktree
+        let git_link = env_dir.join(".git");
+        let content = std::fs::read_to_string(&git_link).unwrap();
+        let gitdir_path = content.strip_prefix("gitdir: ").unwrap().trim().to_string();
+        assert!(
+            std::path::Path::new(&gitdir_path).join("HEAD").exists(),
+            "repaired .git should point to valid gitdir"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_valid_worktree_does_not_auto_repair() {
+        let tag = "valid-v1";
+        let engine_ver = "valid-engine";
+
+        let (_guard, _data_home, _cache_home) = setup_xdg();
+        let remote_dir = temp_dir();
+        create_test_repo(&remote_dir, tag, engine_ver);
+
+        super::install_version_git_with_profile(
+            tag,
+            Some(remote_dir.to_str().unwrap()),
+            false,
+            &crate::profile::Profile::Minimal,
+            false,
+        )
+        .unwrap();
+
+        // Valid worktree should NOT auto-repair — just say "already installed"
+        let result = super::install_version_git_with_profile(
+            tag,
+            Some(remote_dir.to_str().unwrap()),
+            false,
+            &crate::profile::Profile::Minimal,
+            false,
+        );
+        assert!(
+            result.is_ok(),
+            "valid worktree should report already installed"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_missing_gitlink_is_not_valid() {
+        let (_guard, _data_home, _cache_home) = setup_xdg();
+        assert!(!git_cache::worktree_is_valid("nonexistent-version"));
     }
 }

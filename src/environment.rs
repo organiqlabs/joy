@@ -149,6 +149,7 @@ pub fn remove_version(version: &str) -> Result<()> {
         anyhow::bail!("Cannot remove the active global version. Switch to another version first.");
     }
 
+    crate::git_cache::remove_worktree(version);
     std::fs::remove_dir_all(&env_dir)?;
     println!("Removed Flutter {version}.");
     println!("   (Cached engine artifacts remain. Run 'joy gc' to free disk space.)");
