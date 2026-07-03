@@ -30,7 +30,6 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(config::git_cache_dir())?;
 
     match cli.command {
-        Commands::Current => environment::show_current(),
         Commands::Releases { all } => releases::list_releases(all),
         Commands::Gc { git, engines } => cache::run_gc(git, engines),
         Commands::Doctor => environment::run_doctor(),
@@ -89,14 +88,15 @@ fn main() -> Result<()> {
         },
         Commands::Update { force } => toolchain::update_active(force),
         Commands::Toolchain { command } => match command {
-            cli::ToolchainCommands::Install {
+            None => environment::show_current(),
+            Some(cli::ToolchainCommands::Install {
                 version,
                 force,
                 git,
                 repo,
                 profile,
                 skip_checksum,
-            } => {
+            }) => {
                 let profile = Profile::from_str(&profile).unwrap_or_else(|_| Profile::Default);
                 toolchain::install_with_opts(
                     &version,
@@ -107,8 +107,8 @@ fn main() -> Result<()> {
                     skip_checksum,
                 )
             }
-            cli::ToolchainCommands::Remove { versions } => toolchain::remove_many(&versions),
-            cli::ToolchainCommands::List => toolchain::list(),
+            Some(cli::ToolchainCommands::Remove { versions }) => toolchain::remove_many(&versions),
+            Some(cli::ToolchainCommands::List) => toolchain::list(),
         },
     }
 }

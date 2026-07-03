@@ -10,8 +10,6 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Show currently active Flutter version
-    Current,
     /// List available Flutter releases from the official channel
     Releases {
         /// Show all releases (not just recent)
@@ -45,7 +43,7 @@ pub enum Commands {
     /// Manage Flutter SDK toolchains (versions/channels)
     Toolchain {
         #[command(subcommand)]
-        command: ToolchainCommands,
+        command: Option<ToolchainCommands>,
     },
     /// Shell completion management
     Completions {

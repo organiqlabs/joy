@@ -311,6 +311,9 @@ fn checkout_tree(tree: &gix::Tree<'_>, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gix::refs::Target;
+    use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+    use serial_test::serial;
     use std::fs;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -385,16 +388,27 @@ mod tests {
             )
             .unwrap()
             .detach();
-        repo.reference(
-            "HEAD",
-            commit_id,
-            gix::refs::transaction::PreviousValue::Any,
-            "set head",
+        repo.edit_references_as(
+            Some(RefEdit {
+                change: Change::Update {
+                    log: LogChange {
+                        mode: RefLog::AndReference,
+                        force_create_reflog: false,
+                        message: "set head".into(),
+                    },
+                    expected: PreviousValue::Any,
+                    new: Target::Object(commit_id),
+                },
+                name: "HEAD".try_into().unwrap(),
+                deref: false,
+            }),
+            Some(sig),
         )
         .unwrap();
     }
 
     #[test]
+    #[serial]
     fn test_open_or_init_creates_bare_repo() {
         let tmp = temp_dir();
         let cache_path = tmp.join("cache.git");
@@ -416,6 +430,10 @@ mod tests {
         let reopened = gix::open(&cache_path).unwrap();
         assert!(reopened.is_bare());
 
+        unsafe {
+            std::env::remove_var("XDG_DATA_HOME");
+            std::env::remove_var("XDG_CACHE_HOME");
+        }
         fs::remove_dir_all(&tmp).unwrap();
     }
 

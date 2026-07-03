@@ -1,0 +1,43 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  dist:
+    name: Dist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-dist
+        run: cargo install cargo-dist@0.28.2 --locked
+
+      - name: Plan release
+        id: plan
+        run: |
+          cargo dist plan --tag=${{ github.ref_name }} --output=json > plan.json
+          echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
+      - name: Build artifacts
+        run: cargo dist build --tag=${{ github.ref_name }} --output=json > build.json
+
+      - name: Build installers
+        run: cargo dist manifest --tag=${{ github.ref_name }} --artifacts=all --output=json > manifest.json
+
+      - name: Publish release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          artifacts: "target/dist/*"
+          bodyFile: "manifest.json"
+          token: ${{ secrets.GITHUB_TOKEN }}

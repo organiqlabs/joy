@@ -3,6 +3,25 @@ name = "joy"
 description = "sculpting Dart/Flutter toolchains with light"
 version = "0.1.0"
 edition = "2024"
+authors = ["Abdulwahab <abdulwahab@organiqlabs.com>"]
+repository = "https://github.com/organiqlabs/joy"
+homepage = "https://github.com/organiqlabs/joy"
+license = "MIT"
+
+[workspace]
+members = ["."]
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.28.2"
+installers = ["shell", "powershell"]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+]
+ci = ["github"]
+unstable = ["private-network"]
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
@@ -10,7 +29,7 @@ clap_complete = "4.6.5"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
-bstr = "1"
+bstr = "1.12.3"
 tar = "0.4.46"
 flate2 = "1.1.9"
 xz2 = "0.1.7"

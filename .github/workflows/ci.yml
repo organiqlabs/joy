@@ -4,18 +4,26 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    container:
-      image: fedora:latest
-    defaults:
-      run:
-        shell: bash
+  check:
+    name: Check
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Install system dependencies
-        run: dnf install -y git rust cargo openssl-devel pkgconf-pkg-config
       - uses: actions/checkout@v4
-      - name: Run tests
-        run: cargo test --verbose
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test
+      - run: cargo clippy -- -D warnings
+      - run: cargo fmt --check
