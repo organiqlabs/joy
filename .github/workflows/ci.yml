@@ -13,12 +13,17 @@ concurrency:
 jobs:
   check:
     name: Check
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:42
     steps:
+      - name: Install system dependencies
+        run: |
+          dnf install -y gcc openssl-devel pkgconf-pkg-config curl
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
