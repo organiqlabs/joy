@@ -72,7 +72,6 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
-        Commands::Update { force } => toolchain::update_active(force),
         Commands::Toolchain { command } => match command {
             None => environment::show_current(),
             Some(cli::ToolchainCommands::Install {
@@ -94,6 +93,7 @@ fn main() -> Result<()> {
                 )
             }
             Some(cli::ToolchainCommands::Remove { versions }) => toolchain::remove_many(&versions),
+            Some(cli::ToolchainCommands::Update { force }) => toolchain::update_active(force),
             Some(cli::ToolchainCommands::List) => toolchain::list(),
         },
     }

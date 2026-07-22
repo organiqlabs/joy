@@ -303,8 +303,27 @@ fn checkout_tree(tree: &gix::Tree<'_>, dest: &Path) -> Result<()> {
             let data = &blob.data;
             std::fs::write(&entry_path, data)
                 .with_context(|| format!("Failed to write {entry_path:?}"))?;
+            if mode.is_executable() {
+                set_executable(&entry_path)?;
+            }
         }
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)
+        .with_context(|| format!("Failed to read metadata for {path:?}"))?
+        .permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    std::fs::set_permissions(path, perms)
+        .with_context(|| format!("Failed to set permissions for {path:?}"))
+}
+
+#[cfg(not(unix))]
+fn set_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -520,6 +539,112 @@ mod tests {
 
         let content = fs::read_to_string(checkout.join("README.md")).unwrap();
         assert_eq!(content.trim(), "# Flutter SDK");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_checkout_tree_preserves_executable_permissions() {
+        let tmp = temp_dir();
+        let source = tmp.join("source");
+        let checkout = tmp.join("checkout");
+
+        let ts = gix::ThreadSafeRepository::init_opts(
+            &source,
+            gix::create::Kind::WithWorktree,
+            gix::create::Options::default(),
+            gix::open::Options::default(),
+        )
+        .unwrap();
+        let repo: gix::Repository = ts.into();
+
+        for (path, content) in [
+            ("run.sh", &b"#!/bin/sh\necho run"[..]),
+            ("readme.txt", &b"hello"[..]),
+        ] {
+            let full_path = source.join(path);
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&full_path, content).unwrap();
+        }
+
+        let blob_exec_id = repo.write_blob(b"#!/bin/sh\necho run").unwrap().detach();
+        let blob_reg_id = repo.write_blob(b"hello").unwrap().detach();
+
+        let mut tree_entries = vec![
+            gix::objs::tree::Entry {
+                mode: gix::objs::tree::EntryKind::BlobExecutable.into(),
+                filename: "run.sh".as_bytes().into(),
+                oid: blob_exec_id,
+            },
+            gix::objs::tree::Entry {
+                mode: gix::objs::tree::EntryKind::Blob.into(),
+                filename: "readme.txt".as_bytes().into(),
+                oid: blob_reg_id,
+            },
+        ];
+        tree_entries.sort_by(|a, b| a.filename.cmp(&b.filename));
+        let tree = gix::objs::Tree {
+            entries: tree_entries,
+        };
+        let tree_id = repo.write_object(&tree).unwrap();
+
+        let sig = gix::actor::SignatureRef {
+            name: "test".into(),
+            email: "test@test.com".into(),
+            time: "0 +0000",
+        };
+
+        repo.commit_as(
+            sig,
+            sig,
+            "refs/heads/main",
+            "initial",
+            tree_id,
+            [] as [gix::hash::ObjectId; 0],
+        )
+        .unwrap();
+        repo.edit_references_as(
+            Some(RefEdit {
+                change: Change::Update {
+                    log: LogChange {
+                        mode: RefLog::AndReference,
+                        force_create_reflog: false,
+                        message: "set head".into(),
+                    },
+                    expected: PreviousValue::Any,
+                    new: Target::Object(repo.head_commit().unwrap().id().detach()),
+                },
+                name: "HEAD".try_into().unwrap(),
+                deref: false,
+            }),
+            Some(sig),
+        )
+        .unwrap();
+
+        let tree = repo.head_commit().unwrap().tree().unwrap();
+        checkout_tree(&tree, &checkout).unwrap();
+
+        assert!(checkout.join("run.sh").exists());
+        assert!(checkout.join("readme.txt").exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script_perms = fs::metadata(checkout.join("run.sh")).unwrap().permissions();
+            assert!(
+                script_perms.mode() & 0o111 != 0,
+                "run.sh should be executable"
+            );
+            let text_perms = fs::metadata(checkout.join("readme.txt"))
+                .unwrap()
+                .permissions();
+            assert!(
+                text_perms.mode() & 0o111 == 0,
+                "readme.txt should NOT be executable"
+            );
+        }
 
         fs::remove_dir_all(&tmp).unwrap();
     }

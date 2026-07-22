@@ -34,12 +34,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: OverrideCommands,
     },
-    /// Update the currently active toolchain (reinstall or upgrade channel)
-    Update {
-        /// Re-download even if cached
-        #[arg(short, long)]
-        force: bool,
-    },
     /// Manage Flutter SDK toolchains (versions/channels)
     Toolchain {
         #[command(subcommand)]
@@ -124,6 +118,12 @@ pub enum ToolchainCommands {
         /// Skip SHA256 checksum verification after download
         #[arg(long)]
         skip_checksum: bool,
+    },
+    /// Update the currently active toolchain (reinstall or upgrade channel)
+    Update {
+        /// Re-download even if cached
+        #[arg(short, long)]
+        force: bool,
     },
     /// Remove one or more installed Flutter toolchains
     Remove { versions: Vec<String> },
