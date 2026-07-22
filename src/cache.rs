@@ -5,12 +5,10 @@ use crate::util::human_size;
 use anyhow::Result;
 use colored::Colorize;
 
-/// Run garbage collection on cached artifacts
 pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
     println!("{}", "Running garbage collection...".bold());
 
-    // Clean shared engine cache if requested
-    let engines_path = engine_cache::cache_dir();
+    let engines_path = engine_cache::cache_dir()?;
     if clean_engines {
         if engines_path.exists() {
             let eng_size = engine_cache::cache_size();
@@ -30,8 +28,7 @@ pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
         );
     }
 
-    // Clean git object cache if requested
-    let git_path = git_cache::git_cache_path();
+    let git_path = git_cache::git_cache_path()?;
     if clean_git {
         if git_path.exists() {
             let git_size = git_cache::cache_size();
@@ -52,7 +49,6 @@ pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
         );
     }
 
-    // Release list cache (always cleaned during gc, no special flag needed)
     let releases_size = releases::cache_size();
     if releases_size > 0 {
         releases::clear_cache().ok();

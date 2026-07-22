@@ -48,7 +48,13 @@ pub fn set_default(version: &str) -> Result<()> {
 
 /// Show the current global default
 pub fn show_default() {
-    let global_path = config::global_default_path();
+    let global_path = match config::global_default_path() {
+        Ok(p) => p,
+        Err(_) => {
+            println!("No global default set. Use 'joy default <version>' to set one.");
+            return;
+        }
+    };
     if global_path.is_symlink()
         && let Ok(target) = std::fs::read_link(&global_path)
         && let Some(name) = target.file_name()
@@ -80,7 +86,7 @@ pub fn resolve_active_version() -> Result<String> {
     }
 
     // 3. Global default symlink target name
-    let global_path = config::global_default_path();
+    let global_path = config::global_default_path()?;
     if global_path.is_symlink()
         && let Ok(target) = std::fs::read_link(&global_path)
         && let Some(name) = target.file_name()
@@ -97,7 +103,7 @@ pub fn update_active(force: bool) -> Result<()> {
     let version = resolve_active_version()?;
 
     let profile = toolchain_meta::load_profile(&version).unwrap_or(Profile::Default);
-    let is_git = config::envs_dir().join(&version).join(".git").exists();
+    let is_git = config::envs_dir()?.join(&version).join(".git").exists();
 
     let all_releases = releases::fetch_releases()?;
 
@@ -137,7 +143,7 @@ pub fn update_active(force: bool) -> Result<()> {
         install_with_opts(&version, true, is_git, None, &profile, false)
     } else {
         // Still ensure the global default symlink is in place
-        let symlink = config::global_default_path();
+        let symlink = config::global_default_path()?;
         if !symlink.is_symlink() || !symlink.exists() {
             // set_global prints the PATH hint when creating the symlink
             crate::environment::set_global(&version).ok();
@@ -181,7 +187,7 @@ fn update_active_reference(old: &str, new: &str) -> Result<()> {
     }
 
     // 3. Global default symlink
-    let global_path = config::global_default_path();
+    let global_path = config::global_default_path()?;
     if global_path.is_symlink()
         && let Ok(target) = std::fs::read_link(&global_path)
         && let Some(name) = target.file_name()
@@ -219,8 +225,8 @@ fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, String)> {
 pub fn set_override(version: &str) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
     // Verify the version is installed
-    let env_dir = config::envs_dir().join(version);
-    crate::util::check_path_traversal(&env_dir, &config::envs_dir())
+    let env_dir = config::envs_dir()?.join(version);
+    crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if !env_dir.join("bin").join("flutter").exists()
         && !env_dir.join("bin").join("flutter.bat").exists()
@@ -332,7 +338,7 @@ mod tests {
     #[serial]
     fn test_remove_multiple_versions() {
         let (_guard, _data, _cache) = setup_xdg();
-        let envs = config::envs_dir();
+        let envs = config::envs_dir().unwrap();
 
         make_fake_installation_in(&envs, "v1");
         make_fake_installation_in(&envs, "v2");

@@ -19,9 +19,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Ensure directories exist on startup
-    std::fs::create_dir_all(config::envs_dir())?;
-    std::fs::create_dir_all(engine_cache::cache_dir())?;
-    std::fs::create_dir_all(config::git_cache_dir())?;
+    std::fs::create_dir_all(config::envs_dir()?)?;
+    std::fs::create_dir_all(engine_cache::cache_dir()?)?;
+    std::fs::create_dir_all(config::git_cache_dir()?)?;
 
     match cli.command {
         Commands::Releases { all } => releases::list_releases(all),

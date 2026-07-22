@@ -142,8 +142,8 @@ pub fn install_version(
     skip_checksum: bool,
 ) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let env_dir = config::envs_dir().join(version);
-    crate::util::check_path_traversal(&env_dir, &config::envs_dir())
+    let env_dir = config::envs_dir()?.join(version);
+    crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Check if already installed
@@ -177,7 +177,7 @@ pub fn install_version(
     }
 
     // Create temp directory for download
-    let tmp_dir = config::tmp_dir();
+    let tmp_dir = config::tmp_dir()?;
     std::fs::create_dir_all(&tmp_dir)?;
 
     let archive_name = download_url
@@ -257,8 +257,8 @@ pub fn install_version_git_with_profile(
     skip_checksum: bool,
 ) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let env_dir = config::envs_dir().join(version);
-    crate::util::check_path_traversal(&env_dir, &config::envs_dir())
+    let env_dir = config::envs_dir()?.join(version);
+    crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let already_installed = env_dir.join("bin").join("flutter").exists()
@@ -306,7 +306,7 @@ pub fn install_version_git_with_profile(
             match artifact {
                 Artifact::FlutterFramework | Artifact::HostDevTools => (),
                 Artifact::HostEngine => {
-                    if !engine_cache::engine_dir(&engine_ver).exists() {
+                    if !engine_cache::engine_dir(&engine_ver)?.exists() {
                         println!("Downloading engine {engine_ver}...");
                         let engine_clone = engine_ver.clone();
                         let engine_task = std::thread::spawn(move || {

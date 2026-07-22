@@ -3,14 +3,14 @@ use crate::profile::Profile;
 use anyhow::Result;
 
 /// Path to the profile sidecar file for a given toolchain version.
-fn profile_sidecar_path(version: &str) -> std::path::PathBuf {
-    config::envs_dir().join(version).join(".profile")
+fn profile_sidecar_path(version: &str) -> Result<std::path::PathBuf> {
+    Ok(config::envs_dir()?.join(version).join(".profile"))
 }
 
 /// Load the installation profile from a sidecar JSON file.
 pub fn load_profile(version: &str) -> Option<Profile> {
     crate::util::validate_version(version).ok()?;
-    let path = profile_sidecar_path(version);
+    let path = profile_sidecar_path(version).ok()?;
     if !path.exists() {
         return None;
     }
@@ -21,8 +21,8 @@ pub fn load_profile(version: &str) -> Option<Profile> {
 /// Save the installation profile to a sidecar JSON file.
 pub fn save_profile(version: &str, profile: &Profile) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let path = profile_sidecar_path(version);
-    crate::util::check_path_traversal(&path, &config::envs_dir())
+    let path = profile_sidecar_path(version)?;
+    crate::util::check_path_traversal(&path, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -85,7 +85,7 @@ mod tests {
     fn test_save_profile_full_writes_json() {
         let (_guard, _data, _cache) = setup_xdg();
         let ver = tmp_version();
-        let envs = config::envs_dir();
+        let envs = config::envs_dir().unwrap();
         let path = envs.join(&ver).join(".profile");
         std::fs::remove_file(&path).ok();
 
@@ -107,7 +107,7 @@ mod tests {
     fn test_save_profile_custom_writes_components() {
         let (_guard, _data, _cache) = setup_xdg();
         let ver = tmp_version();
-        let envs = config::envs_dir();
+        let envs = config::envs_dir().unwrap();
         let path = envs.join(&ver).join(".profile");
         std::fs::remove_file(&path).ok();
 

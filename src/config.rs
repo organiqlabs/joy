@@ -1,66 +1,56 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Return an XDG base-directories instance scoped to "joy".
-/// Panics if $HOME is not set.
-fn xdg() -> xdg::BaseDirectories {
-    xdg::BaseDirectories::with_prefix("joy")
+fn xdg() -> Result<xdg::BaseDirectories> {
+    if std::env::var_os("HOME").is_none() {
+        anyhow::bail!(
+            "$HOME must be set to use joy. Set the HOME environment variable or use a container with HOME defined."
+        );
+    }
+    Ok(xdg::BaseDirectories::with_prefix("joy"))
 }
 
-/// Root of user-specific data (installed SDKs, profiles, default symlink).
-/// `$XDG_DATA_HOME/joy` or `~/.local/share/joy`.
-pub fn data_root() -> PathBuf {
-    xdg().get_data_home().expect("$HOME must be set to use joy")
+pub fn data_root() -> Result<PathBuf> {
+    xdg()?
+        .get_data_home()
+        .context("failed to determine XDG data home directory")
 }
 
-/// Root of user-specific cache (engine artifacts, git objects, temp downloads).
-/// `$XDG_CACHE_HOME/joy` or `~/.cache/joy`.
-pub fn cache_root() -> PathBuf {
-    xdg()
+pub fn cache_root() -> Result<PathBuf> {
+    xdg()?
         .get_cache_home()
-        .expect("$HOME must be set to use joy")
+        .context("failed to determine XDG cache home directory")
 }
 
-/// Directory where Flutter SDK versions are installed: `{data_root}/envs`
-pub fn envs_dir() -> PathBuf {
-    data_root().join("envs")
+pub fn envs_dir() -> Result<PathBuf> {
+    Ok(data_root()?.join("envs"))
 }
 
-/// Directory for shared engine artifact cache: `{cache_root}/engines`
-pub fn engine_cache_dir() -> PathBuf {
-    cache_root().join("engines")
+pub fn engine_cache_dir() -> Result<PathBuf> {
+    Ok(cache_root()?.join("engines"))
 }
 
-/// Directory for shared git data (bare repo cache): `{cache_root}/git`
-pub fn git_cache_dir() -> PathBuf {
-    cache_root().join("git")
+pub fn git_cache_dir() -> Result<PathBuf> {
+    Ok(cache_root()?.join("git"))
 }
 
-/// Path to the global default symlink: `{data_root}/default`
-pub fn global_default_path() -> PathBuf {
-    data_root().join("default")
+pub fn global_default_path() -> Result<PathBuf> {
+    Ok(data_root()?.join("default"))
 }
 
-/// Temporary download directory: `{cache_root}/tmp`
-pub fn tmp_dir() -> PathBuf {
-    cache_root().join("tmp")
+pub fn tmp_dir() -> Result<PathBuf> {
+    Ok(cache_root()?.join("tmp"))
 }
 
-/// Directory for cached release listings: `{cache_root}/releases`
-pub fn releases_cache_dir() -> PathBuf {
-    cache_root().join("releases")
+pub fn releases_cache_dir() -> Result<PathBuf> {
+    Ok(cache_root()?.join("releases"))
 }
 
-/// Per-project config file name
 pub const PROJECT_CONFIG_FILE: &str = ".joy.json";
-
-/// Directory name for override storage
 pub const OVERRIDE_DIR: &str = ".joy";
-
-/// Override file name inside .joy/
 pub const OVERRIDE_FILE: &str = "override";
 
-/// Path to the override file for a given project directory
 pub fn override_path(project_root: &std::path::Path) -> std::path::PathBuf {
     project_root.join(OVERRIDE_DIR).join(OVERRIDE_FILE)
 }

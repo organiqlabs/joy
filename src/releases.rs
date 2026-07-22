@@ -25,23 +25,26 @@ struct FlutterRelease {
 }
 
 /// Path to the cached release list for the current platform.
-pub(crate) fn releases_cache_path() -> PathBuf {
+pub(crate) fn releases_cache_path() -> Result<PathBuf> {
     let os = std::env::consts::OS;
-    crate::config::releases_cache_dir().join(format!("releases_{os}.json"))
+    Ok(crate::config::releases_cache_dir()?.join(format!("releases_{os}.json")))
 }
 
 /// Save a release list to the disk cache.
 fn save_cache(releases: &[ReleaseInfo]) {
-    if let Ok(json) = serde_json::to_string(releases) {
-        let dir = crate::config::releases_cache_dir();
+    if let Ok(json) = serde_json::to_string(releases)
+        && let Ok(dir) = crate::config::releases_cache_dir()
+    {
         let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(releases_cache_path(), &json);
+        if let Ok(path) = releases_cache_path() {
+            let _ = std::fs::write(path, &json);
+        }
     }
 }
 
 /// Load a release list from the disk cache.
 fn load_cache() -> Option<Vec<ReleaseInfo>> {
-    let path = releases_cache_path();
+    let path = releases_cache_path().ok()?;
     if !path.exists() {
         return None;
     }
@@ -51,7 +54,10 @@ fn load_cache() -> Option<Vec<ReleaseInfo>> {
 
 /// Check whether the cached release list is fresh enough to use without a network call.
 fn is_cache_fresh() -> bool {
-    let path = releases_cache_path();
+    let path = match releases_cache_path() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
     if !path.exists() {
         return false;
     }
@@ -140,7 +146,7 @@ fn fetch_releases_from_remote(url: &str) -> Result<Vec<ReleaseInfo>> {
 
 /// Clear the cached release list.
 pub fn clear_cache() -> Result<()> {
-    let path = releases_cache_path();
+    let path = releases_cache_path()?;
     if path.exists() {
         std::fs::remove_file(&path)?;
     }
@@ -149,7 +155,10 @@ pub fn clear_cache() -> Result<()> {
 
 /// Return the size of the cached release list in bytes.
 pub fn cache_size() -> u64 {
-    let path = releases_cache_path();
+    let path = match releases_cache_path() {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
     if path.exists() {
         std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
     } else {
@@ -280,7 +289,7 @@ mod tests {
         let loaded = load_cache().expect("should load saved cache");
 
         assert!(
-            releases_cache_path().exists(),
+            releases_cache_path().unwrap().exists(),
             "cache file should exist after save"
         );
         assert_eq!(loaded.len(), 2);
@@ -308,7 +317,7 @@ mod tests {
     #[serial]
     fn test_load_cache_returns_none_for_corrupt_file() {
         let _guard = setup_xdg();
-        let path = releases_cache_path();
+        let path = releases_cache_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"this is not valid json").unwrap();
         assert!(path.exists(), "corrupt file should exist");
@@ -321,7 +330,7 @@ mod tests {
     #[serial]
     fn test_load_cache_with_empty_array() {
         let _guard = setup_xdg();
-        let path = releases_cache_path();
+        let path = releases_cache_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"[]").unwrap();
         let loaded = load_cache().expect("empty array should load");
@@ -337,13 +346,13 @@ mod tests {
         let releases = sample_releases();
         save_cache(&releases);
         assert!(
-            releases_cache_path().exists(),
+            releases_cache_path().unwrap().exists(),
             "cache should exist after save"
         );
 
         clear_cache().unwrap();
         assert!(
-            !releases_cache_path().exists(),
+            !releases_cache_path().unwrap().exists(),
             "cache should be removed after clear"
         );
         assert!(load_cache().is_none(), "no cache after clear");
@@ -410,7 +419,7 @@ mod tests {
         save_cache(&releases);
 
         // Read raw JSON from the cache file and verify it's valid
-        let content = std::fs::read_to_string(releases_cache_path()).unwrap();
+        let content = std::fs::read_to_string(releases_cache_path().unwrap()).unwrap();
         let deserialized: Vec<ReleaseInfo> = serde_json::from_str(&content).unwrap();
         assert_eq!(deserialized.len(), 2);
         assert_eq!(deserialized[0].version, "3.29.0");

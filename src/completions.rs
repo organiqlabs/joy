@@ -175,7 +175,10 @@ pub fn complete_release_versions() -> Vec<String> {
 
 /// Generate dynamic completions for installed toolchain versions.
 pub fn complete_installed_versions() -> Vec<String> {
-    let envs_dir = crate::config::envs_dir();
+    let envs_dir = match crate::config::envs_dir() {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
     if !envs_dir.is_dir() {
         return vec![];
     }

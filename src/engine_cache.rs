@@ -1,3 +1,11 @@
+pub mod checksum;
+pub mod symlinks;
+pub mod urls;
+
+pub(crate) use checksum::verify_or_save_sha256;
+pub use symlinks::{adopt_engine_dir, symlink_dir, symlink_engine, symlink_engine_to};
+pub use urls::{artifact_download_url, artifact_subdir, engine_download_url};
+
 use crate::config;
 use crate::profile::Artifact;
 use crate::util::display_path;
@@ -5,72 +13,13 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Root of the central engine cache at {cache_root}/engines/
-pub fn cache_dir() -> PathBuf {
+pub fn cache_dir() -> Result<PathBuf> {
     config::engine_cache_dir()
 }
 
 /// Path to a specific engine version's cached binaries
-pub fn engine_dir(engine_version: &str) -> PathBuf {
-    cache_dir().join(engine_version)
-}
-
-/// Compute the hex-encoded SHA256 of a file.
-fn compute_file_sha256(path: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("Failed to open {} for SHA256", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 65536];
-    loop {
-        let n = std::io::Read::read(&mut file, &mut buffer)
-            .with_context(|| format!("Failed to read {} for SHA256", path.display()))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-    Ok(hex::encode(hasher.finalize()))
-}
-
-/// Verify or save the SHA256 hash of a downloaded archive.
-/// If the sidecar file exists, verify the archive's hash matches it.
-/// If not, compute and save the hash for future verification.
-/// Uses a single pass through the file to avoid double-hashing.
-fn verify_or_save_sha256(
-    archive_path: &Path,
-    sidecar: &Path,
-    label: &str,
-    skip_checksum: bool,
-) -> Result<()> {
-    if skip_checksum {
-        return Ok(());
-    }
-    let hash = compute_file_sha256(archive_path)?;
-
-    if sidecar.exists() {
-        let expected = std::fs::read_to_string(sidecar)
-            .with_context(|| format!("Failed to read SHA256 sidecar {}", sidecar.display()))?;
-        let expected = expected.trim();
-        if expected.is_empty() {
-            anyhow::bail!("SHA256 sidecar is empty: {}", sidecar.display());
-        }
-        if hash != expected {
-            anyhow::bail!(
-                "{} archive corrupt or tampered: expected SHA256 {}, got {}",
-                label,
-                expected,
-                hash
-            );
-        }
-    } else {
-        if let Some(parent) = sidecar.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(sidecar, &hash)
-            .with_context(|| format!("Failed to write SHA256 sidecar {}", sidecar.display()))?;
-    }
-
-    Ok(())
+pub fn engine_dir(engine_version: &str) -> Result<PathBuf> {
+    Ok(cache_dir()?.join(engine_version))
 }
 
 /// Read the engine version string from an installed Flutter SDK
@@ -93,49 +42,9 @@ pub fn read_engine_version(env_dir: &Path) -> Result<String> {
     Ok(trimmed)
 }
 
-/// Symlink a toolchain's bin/cache/engine to a cached engine at a given path.
-fn symlink_engine_to(env_dir: &Path, engine_cache_path: &Path, engine_version: &str) -> Result<()> {
-    let engine_link = env_dir.join("bin").join("cache").join("engine");
-
-    verify_engine_integrity(engine_cache_path).context(format!(
-        "Engine {engine_version} cache is corrupted at {}",
-        display_path(engine_cache_path)
-    ))?;
-
-    if engine_link.exists() || engine_link.is_symlink() {
-        if engine_link.is_symlink() || engine_link.is_file() {
-            std::fs::remove_file(&engine_link)?;
-        } else {
-            std::fs::remove_dir_all(&engine_link)?;
-        }
-    }
-
-    if let Some(parent) = engine_link.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    symlink_dir(engine_cache_path, &engine_link).context("Failed to create engine symlink")?;
-
-    Ok(())
-}
-
-/// Symlink a toolchain's bin/cache/engine to the central cached engine.
-pub fn symlink_engine(env_dir: &Path, engine_version: &str) -> Result<()> {
-    let engine_cache_path = engine_dir(engine_version);
-
-    if !engine_cache_path.exists() {
-        anyhow::bail!(
-            "Engine {engine_version} is not cached at {}",
-            display_path(&engine_cache_path)
-        );
-    }
-
-    symlink_engine_to(env_dir, &engine_cache_path, engine_version)
-}
-
 /// List engine versions cached in the central store.
 pub fn cached_versions() -> Result<Vec<String>> {
-    let dir = cache_dir();
+    let dir = cache_dir()?;
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -146,34 +55,6 @@ pub fn cached_versions() -> Result<Vec<String>> {
         .collect();
     versions.sort();
     Ok(versions)
-}
-
-/// Move an existing engine directory from a toolchain into the central cache,
-/// then replace it with a symlink.
-pub fn adopt_engine_dir(env_dir: &Path, engine_version: &str) -> Result<()> {
-    let src = env_dir.join("bin").join("cache").join("engine");
-    let dest = engine_dir(engine_version);
-
-    if !src.exists() {
-        anyhow::bail!("No engine directory at {}", display_path(&src));
-    }
-
-    if !dest.exists() {
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::rename(&src, &dest)?;
-    } else {
-        std::fs::remove_dir_all(&src)?;
-    }
-
-    // Create symlink from env to central cache
-    if let Some(parent) = src.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    symlink_dir(&dest, &src).context("Failed to symlink adopted engine")?;
-
-    Ok(())
 }
 
 /// Verify that a cached engine directory has valid contents (not empty/corrupted).
@@ -207,87 +88,20 @@ pub fn verify_engine_integrity(engine_dir: &Path) -> Result<()> {
 
 /// Total size of the central engine cache on disk.
 pub fn cache_size() -> u64 {
-    crate::util::dir_size(cache_dir())
+    let dir = match cache_dir() {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+    crate::util::dir_size(&dir)
 }
 
 /// Remove all cached engines from the central store.
 pub fn clear_cache() -> Result<()> {
-    let dir = cache_dir();
+    let dir = cache_dir()?;
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
     Ok(())
-}
-
-/// Returns the engine download URL for a given engine version.
-pub fn engine_download_url(engine_version: &str) -> String {
-    host_engine_url(engine_version)
-}
-
-/// Host-platform string for the current OS (used in download URLs).
-fn host_platform() -> &'static str {
-    match std::env::consts::OS {
-        "linux" => "linux-x64",
-        "macos" => "darwin-x64",
-        "windows" => "windows-x64",
-        _ => "unknown",
-    }
-}
-
-/// Base URL for Flutter engine downloads.
-fn engine_base_url(engine_version: &str) -> String {
-    format!("https://storage.googleapis.com/flutter_infra_release/flutter/{engine_version}")
-}
-
-/// URL for the host-platform engine.
-fn host_engine_url(engine_version: &str) -> String {
-    format!(
-        "{}/{}/engine.zip",
-        engine_base_url(engine_version),
-        host_platform()
-    )
-}
-
-/// Returns the download URL for a specific artifact type.
-pub fn artifact_download_url(engine_version: &str, artifact: &Artifact) -> String {
-    let base = engine_base_url(engine_version);
-    match artifact {
-        Artifact::FlutterFramework | Artifact::HostDevTools => {
-            String::new() // comes from git, no separate download
-        }
-        Artifact::HostEngine
-        | Artifact::DesktopLinux
-        | Artifact::DesktopMacos
-        | Artifact::DesktopWindows => host_engine_url(engine_version),
-        Artifact::AndroidEngineArm => format!("{base}/android-arm-release/engine.zip"),
-        Artifact::AndroidEngineArm64 => format!("{base}/android-arm64-release/engine.zip"),
-        Artifact::AndroidEngineX64 => format!("{base}/android-x64-release/engine.zip"),
-        Artifact::AndroidEngineX86 => format!("{base}/android-x86-release/engine.zip"),
-        Artifact::IosEngine => format!("{base}/ios-release/engine.zip"),
-        Artifact::IosSimulator => format!("{base}/ios-sim-release/engine.zip"),
-        Artifact::WebEngineCanvaskit => format!("{base}/web-canvaskit/engine.zip"),
-        Artifact::WebEngineSkwasm => format!("{base}/flutter-web-sdk.zip"),
-        Artifact::WebEngineHtml => format!("{base}/flutter-web-sdk.zip"),
-    }
-}
-
-/// Subdirectory name within the engine cache for a given artifact.
-pub fn artifact_subdir(artifact: &Artifact) -> &'static str {
-    match artifact {
-        Artifact::FlutterFramework | Artifact::HostDevTools => "",
-        Artifact::HostEngine | Artifact::DesktopLinux => "linux-x64",
-        Artifact::DesktopMacos => "darwin-x64",
-        Artifact::DesktopWindows => "windows-x64",
-        Artifact::AndroidEngineArm => "android-arm-release",
-        Artifact::AndroidEngineArm64 => "android-arm64-release",
-        Artifact::AndroidEngineX64 => "android-x64-release",
-        Artifact::AndroidEngineX86 => "android-x86-release",
-        Artifact::IosEngine => "ios-release",
-        Artifact::IosSimulator => "ios-sim-release",
-        Artifact::WebEngineCanvaskit => "web-canvaskit",
-        Artifact::WebEngineSkwasm => "web-skwasm",
-        Artifact::WebEngineHtml => "web-html",
-    }
 }
 
 /// Ensure a specific artifact is cached. Downloads it if not present.
@@ -300,7 +114,7 @@ pub fn ensure_artifact(
     if is_web_artifact(artifact) {
         ensure_web_sdk(engine_version, skip_checksum)?;
         let subdir = artifact_subdir(artifact);
-        let platform_path = engine_dir(engine_version).join(subdir);
+        let platform_path = engine_dir(engine_version)?.join(subdir);
         if platform_path.exists() {
             let has_files = platform_path
                 .read_dir()
@@ -322,7 +136,7 @@ pub fn ensure_artifact(
         anyhow::bail!("{:?} is not a downloadable artifact", artifact);
     }
     let subdir = artifact_subdir(artifact);
-    let dest = engine_dir(engine_version);
+    let dest = engine_dir(engine_version)?;
     let platform_path = dest.join(subdir);
 
     if platform_path.exists() {
@@ -336,7 +150,7 @@ pub fn ensure_artifact(
     }
 
     std::fs::create_dir_all(&dest)?;
-    let tmp_dir = config::tmp_dir();
+    let tmp_dir = config::tmp_dir()?;
     std::fs::create_dir_all(&tmp_dir)?;
     let archive_path = tmp_dir.join(format!("engine-{engine_version}-{subdir}.zip"));
 
@@ -344,7 +158,7 @@ pub fn ensure_artifact(
 
     // Verify against saved SHA256, or save for future verification
     // Each artifact type gets its own sidecar (e.g., .android-arm64-release.sha256)
-    let sidecar = engine_dir(engine_version).join(format!(".artifact-{subdir}.sha256"));
+    let sidecar = engine_dir(engine_version)?.join(format!(".artifact-{subdir}.sha256"));
     verify_or_save_sha256(
         &archive_path,
         &sidecar,
@@ -363,20 +177,20 @@ pub fn ensure_artifact(
 /// Verifies the archive against a saved SHA256 if one exists,
 /// or saves the hash for future verification on first download.
 pub fn download_engine(engine_version: &str, skip_checksum: bool) -> Result<PathBuf> {
-    let dest = engine_dir(engine_version);
+    let dest = engine_dir(engine_version)?;
     if dest.exists() {
         return Ok(dest);
     }
 
     let url = engine_download_url(engine_version);
-    let tmp_dir = config::tmp_dir();
+    let tmp_dir = config::tmp_dir()?;
     std::fs::create_dir_all(&tmp_dir)?;
     let archive_path = tmp_dir.join(format!("engine-{engine_version}.zip"));
 
     crate::install::download_with_progress(&url, &archive_path)?;
 
     // Verify against saved SHA256, or save for future verification
-    let sidecar = engine_dir(engine_version).join(".engine.sha256");
+    let sidecar = engine_dir(engine_version)?.join(".engine.sha256");
     verify_or_save_sha256(&archive_path, &sidecar, engine_version, skip_checksum)?;
 
     crate::install::extract_archive(&archive_path, &dest)?;
@@ -385,19 +199,9 @@ pub fn download_engine(engine_version: &str, skip_checksum: bool) -> Result<Path
     Ok(dest)
 }
 
-#[cfg(unix)]
-pub fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(src, dst)
-}
-
-#[cfg(windows)]
-pub fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_dir(src, dst)
-}
-
 /// Marker file path for web SDK extraction status.
-fn web_sdk_marker(engine_version: &str) -> PathBuf {
-    engine_dir(engine_version).join(".web-sdk-extracted")
+fn web_sdk_marker(engine_version: &str) -> Result<PathBuf> {
+    Ok(engine_dir(engine_version)?.join(".web-sdk-extracted"))
 }
 
 /// Extract the web SDK archive into the engine cache directory for a specific version.
@@ -424,21 +228,21 @@ fn extract_web_sdk(archive: &Path, dest: &Path) -> Result<()> {
 /// so that all three web renderer artifacts (`WebEngineCanvaskit`, `WebEngineSkwasm`,
 /// `WebEngineHtml`) share a single download.
 pub fn ensure_web_sdk(engine_version: &str, skip_checksum: bool) -> Result<()> {
-    let marker = web_sdk_marker(engine_version);
+    let marker = web_sdk_marker(engine_version)?;
     if marker.exists() {
         return Ok(());
     }
-    let dest = engine_dir(engine_version);
+    let dest = engine_dir(engine_version)?;
     std::fs::create_dir_all(&dest)?;
     let url = artifact_download_url(engine_version, &Artifact::WebEngineCanvaskit);
-    let tmp_dir = config::tmp_dir();
+    let tmp_dir = config::tmp_dir()?;
     std::fs::create_dir_all(&tmp_dir)?;
     let archive_path = tmp_dir.join(format!("engine-{engine_version}-web-sdk.zip"));
     crate::install::download_with_progress(&url, &archive_path)?;
 
     // Verify against saved SHA256, or save for future verification
     // Web SDK has its own sidecar separate from the host engine
-    let sidecar = engine_dir(engine_version).join(".web-sdk.sha256");
+    let sidecar = engine_dir(engine_version)?.join(".web-sdk.sha256");
     verify_or_save_sha256(
         &archive_path,
         &sidecar,
@@ -463,6 +267,7 @@ fn is_web_artifact(artifact: &Artifact) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine_cache::urls::host_platform;
     use std::sync::atomic::{AtomicU32, Ordering};
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -498,10 +303,10 @@ mod tests {
     fn test_engine_dir_path() {
         let tmp = temp_dir();
         let ver = "abc123def456";
-        let path = engine_dir(ver);
+        let path = engine_dir(ver).unwrap();
         assert!(path.to_string_lossy().contains("engines"));
         assert!(path.to_string_lossy().contains(ver));
-        let _ = tmp; // no cleanup needed, path is just computed
+        let _ = tmp;
     }
 
     #[test]
@@ -595,7 +400,9 @@ mod tests {
         let tmp = temp_dir();
         let cache_root = tmp.join("engines");
 
-        assert!(cached_versions().unwrap_or_default().is_empty() || cache_dir() != cache_root); // non-deterministic with real config
+        assert!(
+            cached_versions().unwrap_or_default().is_empty() || cache_dir().unwrap() != cache_root
+        );
 
         // Direct test
         make_fake_engine_cache(&cache_root, "ver1");
@@ -999,7 +806,7 @@ mod tests {
 
     #[test]
     fn test_web_sdk_marker_path() {
-        let marker = web_sdk_marker("abc123");
+        let marker = web_sdk_marker("abc123").unwrap();
         assert!(marker.to_string_lossy().contains("abc123"));
         assert!(marker.to_string_lossy().contains(".web-sdk-extracted"));
     }
@@ -1022,7 +829,7 @@ mod tests {
         let tmp = temp_dir();
         let ver_dir = tmp.join("bin").join("internal");
         std::fs::create_dir_all(&ver_dir).unwrap();
-        std::fs::write(ver_dir.join("engine.version"), b"   \n\t  ").unwrap();
+        std::fs::write(ver_dir.join("engine.version"), b"   \\n\\t  ").unwrap();
         let result = read_engine_version(&tmp);
         assert!(result.is_err(), "whitespace-only should error");
         std::fs::remove_dir_all(&tmp).unwrap();

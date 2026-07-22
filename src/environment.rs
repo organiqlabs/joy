@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 /// List all installed Flutter versions
 pub fn list_versions() -> Result<()> {
-    let envs_dir = config::envs_dir();
+    let envs_dir = config::envs_dir()?;
     if !envs_dir.exists() {
         println!("No Flutter versions installed yet.");
         return Ok(());
@@ -48,7 +48,10 @@ pub fn list_versions() -> Result<()> {
 
 /// Get the current version name from the global symlink
 fn get_current_version_name() -> String {
-    let global_path = config::global_default_path();
+    let global_path = match config::global_default_path() {
+        Ok(p) => p,
+        Err(_) => return String::new(),
+    };
     if global_path.is_symlink()
         && let Ok(target) = std::fs::read_link(&global_path)
         && let Some(name) = target.file_name()
@@ -60,7 +63,7 @@ fn get_current_version_name() -> String {
 
 /// Get the path the global symlink points to
 fn get_current_symlink_target() -> Result<Option<PathBuf>> {
-    let global_path = config::global_default_path();
+    let global_path = config::global_default_path()?;
     if global_path.is_symlink() {
         let target = std::fs::read_link(&global_path)?;
         Ok(Some(target))
@@ -79,7 +82,7 @@ pub fn show_current() -> Result<()> {
         );
     }
 
-    let global_path = config::global_default_path();
+    let global_path = config::global_default_path()?;
     if global_path.is_symlink() {
         let target = std::fs::read_link(&global_path)?;
         if let Some(name) = target.file_name() {
@@ -99,8 +102,8 @@ pub fn show_current() -> Result<()> {
 /// Set the global default version.
 pub fn set_global(version: &str) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let env_dir = config::envs_dir().join(version);
-    crate::util::check_path_traversal(&env_dir, &config::envs_dir())
+    let env_dir = config::envs_dir()?.join(version);
+    crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if !env_dir.join("bin").join("flutter").exists()
         && !env_dir.join("bin").join("flutter.bat").exists()
@@ -108,7 +111,7 @@ pub fn set_global(version: &str) -> Result<()> {
         anyhow::bail!("Flutter {version} is not installed. Run 'joy install {version}' first.");
     }
 
-    let global_path = config::global_default_path();
+    let global_path = config::global_default_path()?;
 
     // Remove existing symlink if any
     if global_path.exists() || global_path.is_symlink() {
@@ -127,7 +130,7 @@ pub fn set_global(version: &str) -> Result<()> {
     println!("Global default set to Flutter {}.", version.green().bold());
     println!(
         "   Add {} to your PATH to use 'joy flutter'",
-        display_path(config::envs_dir().join(version).join("bin"))
+        display_path(config::envs_dir()?.join(version).join("bin"))
     );
     Ok(())
 }
@@ -135,8 +138,8 @@ pub fn set_global(version: &str) -> Result<()> {
 /// Remove an installed version
 pub fn remove_version(version: &str) -> Result<()> {
     crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let env_dir = config::envs_dir().join(version);
-    crate::util::check_path_traversal(&env_dir, &config::envs_dir())
+    let env_dir = config::envs_dir()?.join(version);
+    crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if !env_dir.exists() {
         anyhow::bail!("Flutter {version} is not installed.");
@@ -164,14 +167,14 @@ pub fn run_doctor() -> Result<()> {
     println!();
 
     // Check joy data and cache directories
-    let data_dir = config::data_root();
+    let data_dir = config::data_root()?;
     if data_dir.exists() {
         println!("Data directory: {}", display_path(&data_dir));
     } else {
         println!("Data directory missing: {}", display_path(&data_dir));
     }
 
-    let cache_dir = config::cache_root();
+    let cache_dir = config::cache_root()?;
     if cache_dir.exists() {
         println!("Cache directory: {}", display_path(&cache_dir));
     } else {
@@ -179,18 +182,17 @@ pub fn run_doctor() -> Result<()> {
     }
 
     // Check installed versions
-    let envs = std::fs::read_dir(config::envs_dir())?
+    let envs = std::fs::read_dir(config::envs_dir()?)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
         .count();
     println!("Installed versions: {}", envs);
 
     // Check global default
-    let global = config::global_default_path();
+    let global = config::global_default_path()?;
     if global.is_symlink() {
         if let Ok(target) = std::fs::read_link(&global) {
             println!("Global default -> {}", display_path(&target));
-            // Verify the symlink target still exists
             if target.exists() {
                 println!("Global symlink target exists");
             } else {
@@ -202,7 +204,7 @@ pub fn run_doctor() -> Result<()> {
     }
 
     // Engine cache info
-    let engines_path = engine_cache::cache_dir();
+    let engines_path = engine_cache::cache_dir()?;
     if engines_path.exists() {
         let engines_count = engine_cache::cached_versions().unwrap_or_default().len();
         let engines_size = engine_cache::cache_size();
@@ -217,7 +219,7 @@ pub fn run_doctor() -> Result<()> {
     }
 
     // Git object cache info
-    let git_path = git_cache::git_cache_path();
+    let git_path = git_cache::git_cache_path()?;
     if git_path.exists() {
         let git_objects_size = git_cache::cache_size();
         println!(
@@ -239,7 +241,7 @@ pub fn run_doctor() -> Result<()> {
     }
 
     // Release list cache
-    let releases_cache_path = releases::releases_cache_path();
+    let releases_cache_path = releases::releases_cache_path()?;
     if releases_cache_path.exists() {
         let releases_size = releases::cache_size();
         let modified = std::fs::metadata(&releases_cache_path)
@@ -280,7 +282,7 @@ pub fn run_doctor() -> Result<()> {
     }
 
     // Check for disk usage
-    let envs_size = dir_size(config::envs_dir());
+    let envs_size = dir_size(config::envs_dir()?);
     let engine_cache_size = engine_cache::cache_size();
     let git_cache_disk = dir_size(&git_path);
     println!("Disk usage:");

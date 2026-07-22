@@ -1,6 +1,9 @@
+pub mod checkout;
+
+pub(crate) use self::checkout::checkout_tree;
+
 use crate::config;
 use anyhow::{Context, Result};
-use gix::bstr::ByteSlice;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -21,7 +24,7 @@ pub struct GitCache {
 impl GitCache {
     /// Open the existing bare repo at `{cache_root}/git`, or initialise one.
     pub fn open_or_init() -> Result<Self> {
-        let path = config::git_cache_dir();
+        let path = config::git_cache_dir()?;
         let repo = if path.join("HEAD").exists() {
             gix::open(&path)
                 .with_context(|| format!("Failed to open git cache at {}", path.display()))?
@@ -186,7 +189,10 @@ impl GitCache {
 
     /// Remove a worktree and prune stale metadata.
     pub fn remove_worktree(&self, version: &str) {
-        let env_dir = config::envs_dir().join(version);
+        let env_dir = match config::envs_dir() {
+            Ok(d) => d.join(version),
+            Err(_) => return,
+        };
         let worktrees_dir = self.repo.common_dir().join("worktrees").join(version);
 
         if worktrees_dir.exists() {
@@ -229,13 +235,16 @@ impl GitCache {
 }
 
 /// Path to the central bare Git repository used as object cache.
-pub fn git_cache_path() -> PathBuf {
+pub fn git_cache_path() -> Result<PathBuf> {
     config::git_cache_dir()
 }
 
 /// Calculate total size of the git object cache on disk.
 pub fn cache_size() -> u64 {
-    let path = git_cache_path();
+    let path = match git_cache_path() {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
     if !path.exists() {
         return 0;
     }
@@ -244,7 +253,7 @@ pub fn cache_size() -> u64 {
 
 /// Remove all cached bare repo data and re-initialise.
 pub fn clear_cache() -> Result<()> {
-    let path = git_cache_path();
+    let path = git_cache_path()?;
     if path.exists() {
         std::fs::remove_dir_all(&path).context("Failed to remove git cache")?;
     }
@@ -254,7 +263,10 @@ pub fn clear_cache() -> Result<()> {
 
 /// Check whether a worktree's `.git` pointer is still valid.
 pub fn worktree_is_valid(version: &str) -> bool {
-    let env_dir = config::envs_dir().join(version);
+    let env_dir = match config::envs_dir() {
+        Ok(d) => d.join(version),
+        Err(_) => return false,
+    };
     let git_link = env_dir.join(".git");
 
     if !git_link.is_file() {
@@ -272,59 +284,6 @@ pub fn worktree_is_valid(version: &str) -> bool {
     };
 
     std::path::Path::new(gitdir_path).join("HEAD").exists()
-}
-
-fn checkout_tree(tree: &gix::Tree<'_>, dest: &Path) -> Result<()> {
-    for entry in tree.iter() {
-        let entry = entry.with_context(|| "Failed to read tree entry")?;
-        let name = entry.filename().to_str().unwrap_or_default().to_string();
-        let entry_path = dest.join(&name);
-
-        let mode = entry.mode();
-        if mode.is_tree() {
-            std::fs::create_dir_all(&entry_path)
-                .with_context(|| format!("Failed to create directory {entry_path:?}"))?;
-            let subtree = entry
-                .object()
-                .with_context(|| format!("Failed to get subtree object for {name}"))?;
-            let subtree = subtree
-                .peel_to_tree()
-                .with_context(|| format!("Failed to peel subtree for {name}"))?;
-            checkout_tree(&subtree, &entry_path)?;
-        } else if mode.is_blob() {
-            if let Some(parent) = entry_path.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create parent directory for {entry_path:?}")
-                })?;
-            }
-            let blob = entry
-                .object()
-                .with_context(|| format!("Failed to get blob object for {name}"))?;
-            let data = &blob.data;
-            std::fs::write(&entry_path, data)
-                .with_context(|| format!("Failed to write {entry_path:?}"))?;
-            if mode.is_executable() {
-                set_executable(&entry_path)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)
-        .with_context(|| format!("Failed to read metadata for {path:?}"))?
-        .permissions();
-    perms.set_mode(perms.mode() | 0o111);
-    std::fs::set_permissions(path, perms)
-        .with_context(|| format!("Failed to set permissions for {path:?}"))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -658,7 +617,7 @@ mod tests {
         }
         let target_dir = tmp.join("gitdir_target").join("3.44.4");
 
-        let work_dir = config::envs_dir().join("3.44.4");
+        let work_dir = config::envs_dir().unwrap().join("3.44.4");
         fs::create_dir_all(&work_dir).unwrap();
         fs::create_dir_all(&target_dir).unwrap();
         fs::write(target_dir.join("HEAD"), b"ref: refs/heads/main\n").unwrap();

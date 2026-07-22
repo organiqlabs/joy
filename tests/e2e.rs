@@ -98,7 +98,7 @@ fn create_test_repo(dir: &Path, tag: &str, engine_ver: &str) {
 }
 
 fn pre_populate_engine(engine_ver: &str) {
-    let engine_path = config::engine_cache_dir().join(engine_ver);
+    let engine_path = config::engine_cache_dir().unwrap().join(engine_ver);
     std::fs::create_dir_all(engine_path.join("bin")).unwrap();
     std::fs::write(
         engine_path.join("bin").join("flutter_engine"),
@@ -126,7 +126,7 @@ fn test_minimal_profile_skips_engine() {
     )
     .unwrap();
 
-    let env_dir = config::envs_dir().join(tag);
+    let env_dir = config::envs_dir().unwrap().join(tag);
     assert!(
         env_dir.join("bin").join("flutter").exists(),
         "flutter binary should exist"
@@ -157,7 +157,7 @@ fn test_default_profile_includes_engine() {
     )
     .unwrap();
 
-    let env_dir = config::envs_dir().join(tag);
+    let env_dir = config::envs_dir().unwrap().join(tag);
     assert!(
         env_dir
             .join("bin")
@@ -223,7 +223,7 @@ fn test_minimal_profile_and_no_engine_version_works() {
     )
     .unwrap();
 
-    let env_dir = config::envs_dir().join(tag);
+    let env_dir = config::envs_dir().unwrap().join(tag);
     assert!(
         env_dir.join("bin").join("flutter").exists(),
         "flutter binary should exist even with minimal profile"
@@ -249,13 +249,13 @@ fn test_auto_repair_broken_worktree() {
     )
     .unwrap();
 
-    let env_dir = config::envs_dir().join(tag);
+    let env_dir = config::envs_dir().unwrap().join(tag);
     assert!(
         git_cache::worktree_is_valid(tag),
         "worktree should be valid after fresh install"
     );
 
-    let cache_path = config::git_cache_dir();
+    let cache_path = config::git_cache_dir().unwrap();
     assert!(cache_path.exists(), "cache should exist after install");
     joy::git_cache::clear_cache().unwrap();
 
