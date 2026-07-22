@@ -1,16 +1,21 @@
 use crate::config;
 use crate::profile::Profile;
+use crate::types::Version;
 use anyhow::Result;
+use std::path::PathBuf;
 
 /// Path to the profile sidecar file for a given toolchain version.
-fn profile_sidecar_path(version: &str) -> Result<std::path::PathBuf> {
-    Ok(config::envs_dir()?.join(version).join(".profile"))
+fn profile_sidecar_path(version: &Version) -> PathBuf {
+    // Path construction from a validated Version is always safe.
+    config::envs_dir()
+        .ok()
+        .map(|d| d.join(version.as_str()).join(".profile"))
+        .unwrap_or_else(|| PathBuf::from(".profile"))
 }
 
 /// Load the installation profile from a sidecar JSON file.
-pub fn load_profile(version: &str) -> Option<Profile> {
-    crate::util::validate_version(version).ok()?;
-    let path = profile_sidecar_path(version).ok()?;
+pub fn load_profile(version: &Version) -> Option<Profile> {
+    let path = profile_sidecar_path(version);
     if !path.exists() {
         return None;
     }
@@ -19,9 +24,8 @@ pub fn load_profile(version: &str) -> Option<Profile> {
 }
 
 /// Save the installation profile to a sidecar JSON file.
-pub fn save_profile(version: &str, profile: &Profile) -> Result<()> {
-    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let path = profile_sidecar_path(version)?;
+pub fn save_profile(version: &Version, profile: &Profile) -> Result<()> {
+    let path = profile_sidecar_path(version);
     crate::util::check_path_traversal(&path, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if let Some(parent) = path.parent() {
@@ -43,9 +47,9 @@ mod tests {
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-    fn tmp_version() -> String {
+    fn tmp_version() -> Version {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        format!("test-ver-{n}")
+        Version::new(format!("test-ver-{n}")).unwrap()
     }
 
     fn temp_dir() -> PathBuf {
@@ -86,7 +90,7 @@ mod tests {
         let (_guard, _data, _cache) = setup_xdg();
         let ver = tmp_version();
         let envs = config::envs_dir().unwrap();
-        let path = envs.join(&ver).join(".profile");
+        let path = envs.join(ver.as_str()).join(".profile");
         std::fs::remove_file(&path).ok();
 
         save_profile(&ver, &Profile::Full).unwrap();
@@ -108,7 +112,7 @@ mod tests {
         let (_guard, _data, _cache) = setup_xdg();
         let ver = tmp_version();
         let envs = config::envs_dir().unwrap();
-        let path = envs.join(&ver).join(".profile");
+        let path = envs.join(ver.as_str()).join(".profile");
         std::fs::remove_file(&path).ok();
 
         let custom = Profile::Custom(HashSet::from([Component::Engine, Component::Android]));
