@@ -11,9 +11,16 @@ use joy::environment;
 use joy::profile::Profile;
 use joy::releases;
 use joy::toolchain;
+use joy::types::Version;
 use joy::util;
 use std::io;
 use std::str::FromStr;
+
+/// Parse a version string at the CLI boundary — the "Parse, don't validate" entry point.
+/// Returns a nice error message on failure.
+fn parse_version(s: &str) -> Result<Version> {
+    Version::new(s).map_err(|e| anyhow::anyhow!("Invalid version '{}': {}", s, e))
+}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -28,14 +35,20 @@ fn main() -> Result<()> {
         Commands::Gc { git, engines } => cache::run_gc(git, engines),
         Commands::Doctor => environment::run_doctor(),
         Commands::Default { version } => match version {
-            Some(v) => toolchain::set_default(&v),
+            Some(v) => {
+                let version = parse_version(&v)?;
+                toolchain::set_default(&version)
+            }
             None => {
                 toolchain::show_default();
                 Ok(())
             }
         },
         Commands::Override { command } => match command {
-            cli::OverrideCommands::Set { version } => toolchain::set_override(&version),
+            cli::OverrideCommands::Set { version } => {
+                let version = parse_version(&version)?;
+                toolchain::set_override(&version)
+            }
             cli::OverrideCommands::List => toolchain::list_overrides(),
         },
         Commands::Complete { kind } => match kind {
@@ -82,6 +95,7 @@ fn main() -> Result<()> {
                 profile,
                 skip_checksum,
             }) => {
+                let version = parse_version(&version)?;
                 let profile = Profile::from_str(&profile).unwrap_or_else(|_| Profile::Default);
                 toolchain::install_with_opts(
                     &version,
@@ -92,7 +106,11 @@ fn main() -> Result<()> {
                     skip_checksum,
                 )
             }
-            Some(cli::ToolchainCommands::Remove { versions }) => toolchain::remove_many(&versions),
+            Some(cli::ToolchainCommands::Remove { versions }) => {
+                let versions: Result<Vec<Version>> =
+                    versions.iter().map(|v| parse_version(v)).collect();
+                toolchain::remove_many(&versions?)
+            }
             Some(cli::ToolchainCommands::Update { force }) => toolchain::update_active(force),
             Some(cli::ToolchainCommands::List) => toolchain::list(),
         },

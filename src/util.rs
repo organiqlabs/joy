@@ -1,3 +1,4 @@
+use crate::types::Version;
 use std::path::Path;
 
 /// Replace the user's home directory with `~` for display.
@@ -28,31 +29,18 @@ pub fn dir_size(path: impl AsRef<Path>) -> u64 {
 }
 
 /// Validate that a version string is safe to use in filesystem paths.
-/// Rejects empty strings, strings containing path separators, parent directory
-/// references (`..`), and null bytes.
+///
+/// **Note:** Prefer [`Version::new`] / [`Version::parse`] instead. This function
+/// is a thin compatibility shim that delegates to [`Version::new`] and maps the
+/// error to a plain `String`.
 pub fn validate_version(version: &str) -> Result<(), String> {
-    if version.is_empty() {
-        return Err("Version string must not be empty".to_string());
-    }
-    if version.contains('/') || version.contains('\\') || version.contains('\0') {
-        return Err(format!(
-            "Invalid version '{}': must not contain path separators or null bytes",
-            version
-        ));
-    }
-    if version.contains("..") {
-        return Err(format!(
-            "Invalid version '{}': must not contain parent directory references",
-            version
-        ));
-    }
-    Ok(())
+    Version::new(version).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// After constructing a filesystem path from user-supplied input, canonicalize it
 /// and verify it still resolves within the expected parent directory.
 /// If the path doesn't exist yet, this check is skipped (string-level validation
-/// via `validate_version` handles that case).
+/// via the [`Version`] newtype handles that case).
 pub fn check_path_traversal(path: &Path, parent: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());

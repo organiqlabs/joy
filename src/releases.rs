@@ -1,4 +1,5 @@
 use crate::config::ReleaseInfo;
+use crate::types::{Channel, Version};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Deserialize;
@@ -67,6 +68,38 @@ fn is_cache_fresh() -> bool {
         .is_some_and(|mtime| mtime.elapsed().is_ok_and(|age| age < CACHE_TTL))
 }
 
+/// Convert a raw Flutter API release into a typed `ReleaseInfo`.
+/// Returns `None` if the version or channel strings cannot be parsed.
+fn convert_release(r: FlutterRelease, base_url: &str) -> Option<ReleaseInfo> {
+    let version = match Version::new(&r.version) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "Warning: Skipping release with unparseable version '{}': {e}",
+                r.version
+            );
+            return None;
+        }
+    };
+    let channel = match Channel::new(&r.channel) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "Warning: Skipping release '{}' with unparseable channel '{}': {e}",
+                r.version, r.channel
+            );
+            return None;
+        }
+    };
+    Some(ReleaseInfo {
+        version,
+        channel,
+        archive_url: format!("{}/{}", base_url, r.archive),
+        sha256: r.sha256,
+        release_date: r.release_date,
+    })
+}
+
 /// Fetch the list of Flutter releases from Google's storage API.
 /// We pick the correct platform JSON (linux/macos/windows).
 /// Uses the disk cache if it's fresh (< 24 hours old). Falls back to stale
@@ -123,22 +156,15 @@ fn fetch_releases_from_remote(url: &str) -> Result<Vec<ReleaseInfo>> {
         .json()
         .context("Failed to parse Flutter releases JSON")?;
 
+    let base_url = data
+        .base_url
+        .as_deref()
+        .unwrap_or("https://storage.googleapis.com/flutter_infra_release/releases");
+
     let releases: Vec<ReleaseInfo> = data
         .releases
         .into_iter()
-        .map(|r| ReleaseInfo {
-            version: r.version,
-            channel: r.channel,
-            archive_url: format!(
-                "{}/{}",
-                data.base_url
-                    .as_deref()
-                    .unwrap_or("https://storage.googleapis.com/flutter_infra_release/releases"),
-                r.archive
-            ),
-            sha256: r.sha256,
-            release_date: r.release_date,
-        })
+        .filter_map(|r| convert_release(r, base_url))
         .collect();
 
     Ok(releases)
@@ -180,8 +206,8 @@ pub fn list_releases(show_all: bool) -> Result<()> {
         };
         println!(
             "  {} ({}) [{}] {}",
-            release.version.bold(),
-            release.channel.color(channel_color),
+            release.version.to_string().bold(),
+            release.channel.to_string().color(channel_color),
             release.release_date,
             release.archive_url.dimmed()
         );
@@ -202,12 +228,16 @@ pub fn find_release(version: &str) -> Result<ReleaseInfo> {
     let releases = fetch_releases()?;
 
     // Try exact match first
-    if let Some(r) = releases.iter().find(|r| r.version == version) {
+    if let Some(r) = releases.iter().find(|r| r.version.as_str() == version) {
         return Ok(r.clone());
     }
 
     // Try channel match (latest in that channel)
-    if let Some(r) = releases.iter().rev().find(|r| r.channel == version) {
+    if let Some(r) = releases
+        .iter()
+        .rev()
+        .find(|r| r.channel.as_str() == version)
+    {
         return Ok(r.clone());
     }
 
@@ -257,23 +287,21 @@ mod tests {
     fn sample_releases() -> Vec<ReleaseInfo> {
         vec![
             ReleaseInfo {
-                version: "3.29.0".to_string(),
-                channel: "stable".to_string(),
+                version: Version::new("3.29.0").unwrap(),
+                channel: Channel::new("stable").unwrap(),
                 archive_url: "https://example.com/flutter_3.29.0.tar.xz".to_string(),
                 sha256: "abc123".to_string(),
                 release_date: "2025-01-15".to_string(),
             },
             ReleaseInfo {
-                version: "3.28.0".to_string(),
-                channel: "beta".to_string(),
+                version: Version::new("3.28.0").unwrap(),
+                channel: Channel::new("beta").unwrap(),
                 archive_url: "https://example.com/flutter_3.28.0.tar.xz".to_string(),
                 sha256: "def456".to_string(),
                 release_date: "2025-01-01".to_string(),
             },
         ]
     }
-
-    // ---- Save + load roundtrip ----
 
     #[test]
     #[serial]
@@ -293,8 +321,8 @@ mod tests {
             "cache file should exist after save"
         );
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].version, "3.29.0");
-        assert_eq!(loaded[1].version, "3.28.0");
+        assert_eq!(loaded[0].version.as_str(), "3.29.0");
+        assert_eq!(loaded[1].version.as_str(), "3.28.0");
         assert_eq!(
             loaded[0].archive_url,
             "https://example.com/flutter_3.29.0.tar.xz"
@@ -302,16 +330,12 @@ mod tests {
         assert_eq!(loaded[1].sha256, "def456");
     }
 
-    // ---- Load with no file ----
-
     #[test]
     #[serial]
     fn test_load_cache_returns_none_when_no_file() {
         let _guard = setup_xdg();
         assert!(load_cache().is_none(), "no cache file = None");
     }
-
-    // ---- Load with corrupt file ----
 
     #[test]
     #[serial]
@@ -324,8 +348,6 @@ mod tests {
         assert!(load_cache().is_none(), "corrupt file should return None");
     }
 
-    // ---- Load with empty array ----
-
     #[test]
     #[serial]
     fn test_load_cache_with_empty_array() {
@@ -336,8 +358,6 @@ mod tests {
         let loaded = load_cache().expect("empty array should load");
         assert!(loaded.is_empty(), "empty array should produce empty vec");
     }
-
-    // ---- Clear cache ----
 
     #[test]
     #[serial]
@@ -366,8 +386,6 @@ mod tests {
         assert!(clear_cache().is_ok());
     }
 
-    // ---- Cache size ----
-
     #[test]
     #[serial]
     fn test_cache_size_zero_when_no_cache() {
@@ -387,8 +405,6 @@ mod tests {
         assert_eq!(cache_size(), 0, "size should be 0 after clear");
     }
 
-    // ---- Cache freshness ----
-
     #[test]
     #[serial]
     fn test_is_cache_fresh_returns_false_when_no_file() {
@@ -405,12 +421,6 @@ mod tests {
         assert!(is_cache_fresh(), "recently saved cache should be fresh");
     }
 
-    // ---- Fallback: the cache layer that fetch_releases uses on network failure ----
-    // Covered by test_save_and_load_cache_roundtrip above: save_cache then load_cache
-    // returns the data. This is the same path fetch_releases uses on network failure.
-
-    // ---- ReleaseInfo serialization roundtrip (save uses JSON) ----
-
     #[test]
     #[serial]
     fn test_cache_json_roundtrip() {
@@ -422,7 +432,7 @@ mod tests {
         let content = std::fs::read_to_string(releases_cache_path().unwrap()).unwrap();
         let deserialized: Vec<ReleaseInfo> = serde_json::from_str(&content).unwrap();
         assert_eq!(deserialized.len(), 2);
-        assert_eq!(deserialized[0].version, "3.29.0");
-        assert_eq!(deserialized[1].version, "3.28.0");
+        assert_eq!(deserialized[0].version.as_str(), "3.29.0");
+        assert_eq!(deserialized[1].version.as_str(), "3.28.0");
     }
 }

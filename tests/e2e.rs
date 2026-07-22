@@ -2,6 +2,7 @@ use joy::config;
 use joy::git_cache;
 use joy::install;
 use joy::profile::Profile;
+use joy::types::Version;
 use serial_test::serial;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -107,6 +108,10 @@ fn pre_populate_engine(engine_ver: &str) {
     .unwrap();
 }
 
+fn v(tag: &str) -> Version {
+    Version::new(tag).unwrap()
+}
+
 #[test]
 #[serial]
 fn test_minimal_profile_skips_engine() {
@@ -118,7 +123,7 @@ fn test_minimal_profile_skips_engine() {
     create_test_repo(&remote_dir, tag, engine_ver);
 
     install::install_version_git_with_profile(
-        tag,
+        &v(tag),
         Some(remote_dir.to_str().unwrap()),
         false,
         &Profile::Minimal,
@@ -149,7 +154,7 @@ fn test_default_profile_includes_engine() {
     pre_populate_engine(engine_ver);
 
     install::install_version_git_with_profile(
-        tag,
+        &v(tag),
         Some(remote_dir.to_str().unwrap()),
         false,
         &Profile::Default,
@@ -215,7 +220,7 @@ fn test_minimal_profile_and_no_engine_version_works() {
     };
 
     install::install_version_git_with_profile(
-        tag,
+        &v(tag),
         Some(remote_dir.to_str().unwrap()),
         false,
         &Profile::Minimal,
@@ -241,7 +246,7 @@ fn test_auto_repair_broken_worktree() {
     create_test_repo(&remote_dir, tag, engine_ver);
 
     install::install_version_git_with_profile(
-        tag,
+        &v(tag),
         Some(remote_dir.to_str().unwrap()),
         false,
         &Profile::Minimal,
@@ -269,7 +274,7 @@ fn test_auto_repair_broken_worktree() {
     );
 
     install::install_version_git_with_profile(
-        tag,
+        &v(tag),
         Some(remote_dir.to_str().unwrap()),
         false,
         &Profile::Minimal,
@@ -306,7 +311,7 @@ fn test_valid_worktree_does_not_auto_repair() {
     create_test_repo(&remote_dir, tag, engine_ver);
 
     install::install_version_git_with_profile(
-        tag,
+        &v(tag),
         Some(remote_dir.to_str().unwrap()),
         false,
         &Profile::Minimal,
@@ -315,7 +320,7 @@ fn test_valid_worktree_does_not_auto_repair() {
     .unwrap();
 
     let result = install::install_version_git_with_profile(
-        tag,
+        &v(tag),
         Some(remote_dir.to_str().unwrap()),
         false,
         &Profile::Minimal,

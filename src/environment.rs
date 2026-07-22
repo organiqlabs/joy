@@ -3,6 +3,7 @@ use crate::config;
 use crate::engine_cache;
 use crate::git_cache;
 use crate::releases;
+use crate::types::Version;
 use crate::util::{dir_size, display_path, human_size};
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -78,7 +79,7 @@ pub fn show_current() -> Result<()> {
     if let Some(project_version) = crate::project::read_project_version()? {
         println!(
             "Project: {} (from .joy.json)",
-            project_version.green().bold()
+            project_version.to_string().green().bold()
         );
     }
 
@@ -100,9 +101,8 @@ pub fn show_current() -> Result<()> {
 }
 
 /// Set the global default version.
-pub fn set_global(version: &str) -> Result<()> {
-    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let env_dir = config::envs_dir()?.join(version);
+pub fn set_global(version: &Version) -> Result<()> {
+    let env_dir = config::envs_dir()?.join(version.as_str());
     crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if !env_dir.join("bin").join("flutter").exists()
@@ -127,18 +127,20 @@ pub fn set_global(version: &str) -> Result<()> {
     std::os::windows::fs::symlink_dir(&env_dir, &global_path)
         .context("Failed to create global symlink")?;
 
-    println!("Global default set to Flutter {}.", version.green().bold());
+    println!(
+        "Global default set to Flutter {}.",
+        version.to_string().green().bold()
+    );
     println!(
         "   Add {} to your PATH to use 'joy flutter'",
-        display_path(config::envs_dir()?.join(version).join("bin"))
+        display_path(config::envs_dir()?.join(version.as_str()).join("bin"))
     );
     Ok(())
 }
 
 /// Remove an installed version
-pub fn remove_version(version: &str) -> Result<()> {
-    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let env_dir = config::envs_dir()?.join(version);
+pub fn remove_version(version: &Version) -> Result<()> {
+    let env_dir = config::envs_dir()?.join(version.as_str());
     crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if !env_dir.exists() {
@@ -152,7 +154,8 @@ pub fn remove_version(version: &str) -> Result<()> {
         anyhow::bail!("Cannot remove the active global version. Switch to another version first.");
     }
 
-    if let Ok(cache) = crate::git_cache::GitCache::open_or_init() {
+    let cache = crate::git_cache::GitCache::<crate::git_cache::Fresh>::open_or_init().ok();
+    if let Some(cache) = cache {
         cache.remove_worktree(version);
     }
     std::fs::remove_dir_all(&env_dir)?;

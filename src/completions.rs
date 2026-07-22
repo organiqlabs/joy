@@ -166,7 +166,7 @@ pub fn complete_release_versions() -> Vec<String> {
         .ok()
         .into_iter()
         .flat_map(|releases| releases.into_iter())
-        .map(|r| r.version)
+        .map(|r| r.version.into_inner())
         .collect();
     versions.sort();
     versions.dedup();

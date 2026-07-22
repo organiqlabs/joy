@@ -1,4 +1,5 @@
 use crate::config::{PROJECT_CONFIG_FILE, ProjectConfig};
+use crate::types::Version;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -19,7 +20,7 @@ fn find_project_config() -> Result<Option<PathBuf>> {
 }
 
 /// Read the project version if a .joy.json exists
-pub fn read_project_version() -> Result<Option<String>> {
+pub fn read_project_version() -> Result<Option<Version>> {
     if let Some(config_path) = find_project_config()? {
         let content = std::fs::read_to_string(&config_path).context("Failed to read .joy.json")?;
         let config: ProjectConfig =

@@ -2,6 +2,7 @@ use crate::config;
 use crate::profile::Profile;
 use crate::releases;
 use crate::toolchain_meta;
+use crate::types::Version;
 use crate::util::display_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -9,7 +10,7 @@ use std::path::PathBuf;
 
 /// Install a Flutter SDK toolchain, optionally via Git clone with shared object cache
 pub fn install_with_opts(
-    version: &str,
+    version: &Version,
     force: bool,
     git: bool,
     repo: Option<&str>,
@@ -30,7 +31,7 @@ pub fn install_with_opts(
 }
 
 /// Remove one or more installed Flutter toolchains
-pub fn remove_many(versions: &[String]) -> Result<()> {
+pub fn remove_many(versions: &[Version]) -> Result<()> {
     for version in versions {
         crate::environment::remove_version(version)?;
     }
@@ -42,7 +43,7 @@ pub fn list() -> Result<()> {
 }
 
 /// Set the global default toolchain (delegates to environment::set_global)
-pub fn set_default(version: &str) -> Result<()> {
+pub fn set_default(version: &Version) -> Result<()> {
     crate::environment::set_global(version)
 }
 
@@ -71,7 +72,7 @@ pub fn show_default() {
 }
 
 /// Resolve the currently active version from override → project config → global default.
-pub fn resolve_active_version() -> Result<String> {
+pub fn resolve_active_version() -> Result<Version> {
     let cwd = std::env::current_dir()?;
 
     // 1. Directory override (.joy/override in cwd or parent dirs)
@@ -91,7 +92,10 @@ pub fn resolve_active_version() -> Result<String> {
         && let Ok(target) = std::fs::read_link(&global_path)
         && let Some(name) = target.file_name()
     {
-        return Ok(name.to_string_lossy().to_string());
+        let name_str = name.to_string_lossy();
+        if let Ok(v) = Version::new(name_str.as_ref()) {
+            return Ok(v);
+        }
     }
 
     anyhow::bail!("No active toolchain found. Install one with 'joy toolchain install <version>'.")
@@ -103,13 +107,19 @@ pub fn update_active(force: bool) -> Result<()> {
     let version = resolve_active_version()?;
 
     let profile = toolchain_meta::load_profile(&version).unwrap_or(Profile::Default);
-    let is_git = config::envs_dir()?.join(&version).join(".git").exists();
+    let is_git = config::envs_dir()?
+        .join(version.as_str())
+        .join(".git")
+        .exists();
 
     let all_releases = releases::fetch_releases()?;
 
     // If the version string IS a channel name (e.g. "stable"), just install
     // the latest — install_version resolves channels to their newest release.
-    if all_releases.iter().any(|r| r.channel == version) {
+    if all_releases
+        .iter()
+        .any(|r| r.channel.as_str() == version.as_str())
+    {
         println!("Upgrading Flutter {} to latest...", version);
         install_with_opts(&version, true, is_git, None, &profile, false)?;
         crate::environment::set_global(&version)?;
@@ -117,21 +127,21 @@ pub fn update_active(force: bool) -> Result<()> {
     }
 
     // Concrete version — look for a newer release on the same channel
-    let current_release = releases::find_release(&version)?;
-    let channel = &current_release.channel;
+    let current_release = releases::find_release(version.as_str())?;
+    let channel = current_release.channel.clone();
 
     let latest = all_releases
         .iter()
-        .filter(|r| r.channel == *channel)
+        .filter(|r| r.channel == channel)
         .max_by_key(|r| &r.release_date);
 
     if let Some(latest) = latest
-        && latest.version != version
+        && latest.version.as_str() != version.as_str()
     {
         println!(
             "Upgrading Flutter {} -> {}...",
             version,
-            latest.version.green().bold()
+            latest.version.to_string().green().bold()
         );
         install_with_opts(&latest.version, true, is_git, None, &profile, false)?;
         update_active_reference(&version, &latest.version)?;
@@ -162,26 +172,32 @@ pub fn update_active(force: bool) -> Result<()> {
 
 /// After an upgrade, update the active reference (override or global default)
 /// to point to the new version.
-fn update_active_reference(old: &str, new: &str) -> Result<()> {
+fn update_active_reference(old: &Version, new: &Version) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     // 1. Local directory override
     let local_override = config::override_path(&cwd);
     if local_override.exists()
         && let Ok(content) = std::fs::read_to_string(&local_override)
-        && content.trim() == old
+        && content.trim() == old.as_str()
     {
-        std::fs::write(&local_override, new)?;
-        println!("   Override updated to Flutter {}", new.green().bold());
+        std::fs::write(&local_override, new.as_str())?;
+        println!(
+            "   Override updated to Flutter {}",
+            new.to_string().green().bold()
+        );
         return Ok(());
     }
 
     // 2. Parent-directory overrides
     for (dir, ver) in find_overrides(&cwd) {
-        if ver == old {
+        if ver.as_str() == old.as_str() {
             let op = config::override_path(&dir);
-            std::fs::write(&op, new)?;
-            println!("   Override updated to Flutter {}", new.green().bold());
+            std::fs::write(&op, new.as_str())?;
+            println!(
+                "   Override updated to Flutter {}",
+                new.to_string().green().bold()
+            );
             return Ok(());
         }
     }
@@ -191,7 +207,7 @@ fn update_active_reference(old: &str, new: &str) -> Result<()> {
     if global_path.is_symlink()
         && let Ok(target) = std::fs::read_link(&global_path)
         && let Some(name) = target.file_name()
-        && name == old
+        && name == old.as_str()
     {
         crate::environment::set_global(new)?;
         return Ok(());
@@ -201,7 +217,7 @@ fn update_active_reference(old: &str, new: &str) -> Result<()> {
 }
 
 /// Walk up from cwd to find all .joy/override files
-fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, String)> {
+fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, Version)> {
     let mut results = Vec::new();
     let mut dir = Some(cwd);
 
@@ -210,8 +226,10 @@ fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, String)> {
         if override_path.exists()
             && let Ok(content) = std::fs::read_to_string(&override_path)
         {
-            let version = content.trim().to_string();
-            if !version.is_empty() {
+            let trimmed = content.trim().to_string();
+            if !trimmed.is_empty()
+                && let Ok(version) = Version::new(trimmed)
+            {
                 results.push((current.to_path_buf(), version));
             }
         }
@@ -222,10 +240,8 @@ fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, String)> {
 }
 
 /// Set a directory-specific override (stored in .joy/override)
-pub fn set_override(version: &str) -> Result<()> {
-    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    // Verify the version is installed
-    let env_dir = config::envs_dir()?.join(version);
+pub fn set_override(version: &Version) -> Result<()> {
+    let env_dir = config::envs_dir()?.join(version.as_str());
     crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if !env_dir.join("bin").join("flutter").exists()
@@ -242,11 +258,11 @@ pub fn set_override(version: &str) -> Result<()> {
         std::fs::create_dir_all(parent).context("Failed to create .joy directory for override")?;
     }
 
-    std::fs::write(&override_path, version).context("Failed to write .joy/override")?;
+    std::fs::write(&override_path, version.as_str()).context("Failed to write .joy/override")?;
 
     println!(
         "Override set: Flutter {} for {}",
-        version.green().bold(),
+        version.to_string().green().bold(),
         display_path(&cwd)
     );
     println!("   (stored in {})", display_path(&override_path));
@@ -271,17 +287,17 @@ pub fn list_overrides() -> Result<()> {
             println!(
                 "  {} -> {} {}",
                 display_path(path),
-                version.green().bold(),
+                version.to_string().green().bold(),
                 "(current)".green()
             );
         } else {
-            println!("  {} -> {}", display_path(path), version.bold());
+            println!("  {} -> {}", display_path(path), version.to_string().bold());
         }
     }
     println!(
         "\nNearest override: {} -> {}",
         display_path(&overrides[0].0),
-        overrides[0].1.green().bold()
+        overrides[0].1.to_string().green().bold()
     );
 
     Ok(())
@@ -328,8 +344,8 @@ mod tests {
         (XdgGuard(tmp), data_home, cache_home)
     }
 
-    fn make_fake_installation_in(envs: &Path, version: &str) {
-        let env_dir = envs.join(version).join("bin");
+    fn make_fake_installation_in(envs: &Path, version: &Version) {
+        let env_dir = envs.join(version.as_str()).join("bin");
         std::fs::create_dir_all(&env_dir).unwrap();
         std::fs::write(env_dir.join("flutter"), b"#!/bin/sh\necho fake").unwrap();
     }
@@ -340,12 +356,15 @@ mod tests {
         let (_guard, _data, _cache) = setup_xdg();
         let envs = config::envs_dir().unwrap();
 
-        make_fake_installation_in(&envs, "v1");
-        make_fake_installation_in(&envs, "v2");
+        let v1 = Version::new("v1").unwrap();
+        let v2 = Version::new("v2").unwrap();
+
+        make_fake_installation_in(&envs, &v1);
+        make_fake_installation_in(&envs, &v2);
         assert!(envs.join("v1").exists());
         assert!(envs.join("v2").exists());
 
-        remove_many(&["v1".to_string(), "v2".to_string()]).unwrap();
+        remove_many(&[v1.clone(), v2.clone()]).unwrap();
 
         assert!(!envs.join("v1").exists());
         assert!(!envs.join("v2").exists());

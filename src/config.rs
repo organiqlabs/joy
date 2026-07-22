@@ -1,3 +1,4 @@
+use crate::types::{Channel, Version};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -57,13 +58,13 @@ pub fn override_path(project_root: &std::path::Path) -> std::path::PathBuf {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectConfig {
-    pub version: String,
+    pub version: Version,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReleaseInfo {
-    pub version: String,
-    pub channel: String,
+    pub version: Version,
+    pub channel: Channel,
     pub archive_url: String,
     pub sha256: String,
     pub release_date: String,

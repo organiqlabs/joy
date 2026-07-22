@@ -11,4 +11,5 @@ pub mod project;
 pub mod releases;
 pub mod toolchain;
 pub mod toolchain_meta;
+pub mod types;
 pub mod util;

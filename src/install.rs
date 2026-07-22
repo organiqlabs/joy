@@ -1,10 +1,11 @@
 use crate::config;
 use crate::engine_cache;
-use crate::git_cache;
+use crate::git_cache::{self, Fresh, GitCache};
 use crate::profile::Artifact;
 use crate::profile::Profile;
 use crate::releases;
 use crate::toolchain_meta;
+use crate::types::Version;
 use crate::util::display_path;
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -136,13 +137,12 @@ pub(crate) fn verify_sha256(path: &Path, expected_hex: &str) -> Result<()> {
 
 /// Install a specific Flutter version with a given profile
 pub fn install_version(
-    version: &str,
+    version: &Version,
     force: bool,
     profile: &Profile,
     skip_checksum: bool,
 ) -> Result<()> {
-    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let env_dir = config::envs_dir()?.join(version);
+    let env_dir = config::envs_dir()?.join(version.as_str());
     crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -159,7 +159,7 @@ pub fn install_version(
     }
 
     // Find the release info
-    let release = releases::find_release(version)?;
+    let release = releases::find_release(version.as_str())?;
     let download_url = &release.archive_url;
 
     println!("Installing Flutter {version} ({})", release.channel);
@@ -232,7 +232,7 @@ pub fn install_version(
     {
         let engine_path = env_dir.join("bin").join("cache").join("engine");
         if engine_path.exists() {
-            match engine_cache::adopt_engine_dir(&env_dir, &engine_ver) {
+            match engine_cache::adopt_engine_dir(&env_dir, engine_ver.as_str()) {
                 Ok(()) => {
                     println!("Engine {engine_ver} cached globally (shared across versions)");
                 }
@@ -250,20 +250,19 @@ pub fn install_version(
 
 /// Install a Flutter SDK version via Git with a specific profile.
 pub fn install_version_git_with_profile(
-    version: &str,
+    version: &Version,
     repo_url: Option<&str>,
     force: bool,
     profile: &Profile,
     skip_checksum: bool,
 ) -> Result<()> {
-    crate::util::validate_version(version).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let env_dir = config::envs_dir()?.join(version);
+    let env_dir = config::envs_dir()?.join(version.as_str());
     crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let already_installed = env_dir.join("bin").join("flutter").exists()
         || env_dir.join("bin").join("flutter.bat").exists();
-    let is_broken_worktree = already_installed && !git_cache::worktree_is_valid(version);
+    let is_broken_worktree = already_installed && !git_cache::worktree_is_valid(version.as_str());
 
     if already_installed {
         if !force && !is_broken_worktree {
@@ -275,7 +274,7 @@ pub fn install_version_git_with_profile(
         } else {
             println!("Reinstalling {version}...");
         }
-        let cache = git_cache::GitCache::open_or_init()?;
+        let cache = GitCache::<Fresh>::open_or_init()?;
         cache.remove_worktree(version);
         std::fs::remove_dir_all(&env_dir).ok();
     }
@@ -283,9 +282,11 @@ pub fn install_version_git_with_profile(
     let remote = repo_url.unwrap_or("https://github.com/flutter/flutter.git");
     println!("Creating lightweight toolchain for Flutter {version}...");
 
-    let cache = git_cache::GitCache::open_or_init()?;
-    let ref_kind = cache.discover_ref(remote, version)?;
-    cache.fetch_shallow(remote, version, ref_kind)?;
+    // Typestate: Git operations in sequence:
+    // Fresh → discover_ref → RemoteDiscovered → fetch_shallow → Fresh → create_worktree
+    let cache = GitCache::<Fresh>::open_or_init()?;
+    let cache = cache.discover_ref(remote, version)?; // Fresh → RemoteDiscovered
+    let cache = cache.fetch_shallow(remote, version)?; // RemoteDiscovered → Fresh
     cache.create_worktree(version, &env_dir)?;
 
     // Verify the worktree is lightweight (.git is a file, not a dir)
@@ -294,23 +295,24 @@ pub fn install_version_git_with_profile(
         eprintln!("Toolchain is not a lightweight worktree (.git is a directory)");
     }
 
-    if let Ok(release) = crate::releases::find_release(version) {
+    if let Ok(release) = crate::releases::find_release(version.as_str()) {
         let _ = std::fs::write(
             env_dir.join("bin").join("internal").join("release_branch"),
-            release.channel,
+            release.channel.as_str(),
         );
     }
 
     if let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir) {
+        let ev_str = engine_ver.as_str().to_string();
         for artifact in profile.included_artifacts() {
             match artifact {
                 Artifact::FlutterFramework | Artifact::HostDevTools => (),
                 Artifact::HostEngine => {
-                    if !engine_cache::engine_dir(&engine_ver)?.exists() {
-                        println!("Downloading engine {engine_ver}...");
-                        let engine_clone = engine_ver.clone();
+                    if !engine_cache::engine_dir(&ev_str)?.exists() {
+                        println!("Downloading engine {ev_str}...");
+                        let ec = ev_str.clone();
                         let engine_task = std::thread::spawn(move || {
-                            engine_cache::download_engine(&engine_clone, skip_checksum)
+                            engine_cache::download_engine(&ec, skip_checksum)
                         });
                         let result = engine_task
                             .join()
@@ -318,7 +320,7 @@ pub fn install_version_git_with_profile(
                         println!("Engine cached at {}", display_path(&result));
                     }
 
-                    if let Err(e) = engine_cache::symlink_engine(&env_dir, &engine_ver) {
+                    if let Err(e) = engine_cache::symlink_engine(&env_dir, &ev_str) {
                         eprintln!("Could not symlink engine: {e}");
                     }
                 }
@@ -330,7 +332,7 @@ pub fn install_version_git_with_profile(
                         .join("artifacts")
                         .join(subdir);
                     if !target.exists() {
-                        match engine_cache::ensure_artifact(&engine_ver, &artifact, skip_checksum) {
+                        match engine_cache::ensure_artifact(&ev_str, &artifact, skip_checksum) {
                             Ok(cached) => {
                                 if let Some(parent) = target.parent() {
                                     std::fs::create_dir_all(parent).ok();
