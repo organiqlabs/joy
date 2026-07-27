@@ -93,8 +93,27 @@ fn is_cache_fresh() -> bool {
         .is_some_and(|mtime| mtime.elapsed().is_ok_and(|age| age < CACHE_TTL))
 }
 
+/// Validate that a download URL points to a trusted Flutter storage domain.
+/// Returns an error message if the URL is suspicious.
+fn validate_download_url(raw: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(raw).map_err(|e| format!("Invalid download URL: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err(format!(
+            "Download URL must use HTTPS, got scheme '{}'",
+            parsed.scheme()
+        ));
+    }
+    let host = parsed.host_str().unwrap_or("");
+    if !host.ends_with(".googleapis.com") {
+        return Err(format!(
+            "Download URL host '{host}' is not a trusted Flutter storage domain"
+        ));
+    }
+    Ok(())
+}
+
 /// Convert a raw Flutter API release into a typed `ReleaseInfo`.
-/// Returns `None` if the version or channel strings cannot be parsed.
+/// Returns `None` if the version, channel, or download URL cannot be parsed/validated.
 fn convert_release(r: FlutterRelease, base_url: &str) -> Option<ReleaseInfo> {
     let version = match Version::new(&r.version) {
         Ok(v) => v,
@@ -116,10 +135,18 @@ fn convert_release(r: FlutterRelease, base_url: &str) -> Option<ReleaseInfo> {
             return None;
         }
     };
+    let archive_url = format!("{}/{}", base_url, r.archive);
+    if let Err(e) = validate_download_url(&archive_url) {
+        eprintln!(
+            "Warning: Skipping release '{}' with invalid download URL: {e}",
+            r.version
+        );
+        return None;
+    }
     Some(ReleaseInfo {
         version,
         channel,
-        archive_url: format!("{}/{}", base_url, r.archive),
+        archive_url,
         sha256: r.sha256,
         release_date: r.release_date,
     })

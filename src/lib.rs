@@ -2,6 +2,7 @@ pub mod cache;
 pub mod cli;
 pub mod completions;
 pub mod config;
+pub mod doctor;
 pub mod engine_cache;
 pub mod environment;
 pub mod git_cache;

@@ -6,6 +6,7 @@ use joy::cache;
 use joy::cli;
 use joy::completions;
 use joy::config;
+use joy::doctor;
 use joy::engine_cache;
 use joy::environment;
 use joy::profile::Profile;
@@ -38,7 +39,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Releases { all } => releases::list_releases(all),
         Commands::Gc { git, engines } => cache::run_gc(git, engines),
-        Commands::Doctor => environment::run_doctor(),
+        Commands::Doctor => doctor::run_doctor(),
         Commands::Default { version } => match version {
             Some(v) => {
                 let version = parse_version(&v)?;
