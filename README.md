@@ -39,21 +39,21 @@ flutter --version
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `joy toolchain install <version>` | Install a Flutter SDK toolchain (e.g., `3.29.0`, `stable`, `beta`) |
-| `joy toolchain install <version> --git` | Install via shallow Git clone (lightweight worktree) |
-| `joy toolchain list` | List installed toolchains |
-| `joy toolchain remove <version> [<version>...]` | Remove one or more installed toolchains |
-| `joy toolchain update` | Upgrade the active toolchain to the latest on its channel |
-| `joy releases` | List available Flutter releases from Google's storage API |
-| `joy default [<version>]` | Show or set the global default toolchain |
-| `joy override set <version>` | Pin a specific version for the current directory |
-| `joy override list` | List active directory overrides |
-| `joy doctor` | Check that joy is set up correctly |
-| `joy gc` | Run garbage collection on unused cached artifacts |
-| `joy completions generate <shell>` | Print a completion script for the given shell |
-| `joy completions install [<shell>]` | Install shell completions system-wide |
+| Command                                         | Description                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------ |
+| `joy toolchain install <version>`               | Install a Flutter SDK toolchain (e.g., `3.29.0`, `stable`, `beta`) |
+| `joy toolchain install <version> --git`         | Install via shallow Git clone (lightweight worktree)               |
+| `joy toolchain list`                            | List installed toolchains                                          |
+| `joy toolchain remove <version> [<version>...]` | Remove one or more installed toolchains                            |
+| `joy toolchain update`                          | Upgrade the active toolchain to the latest on its channel          |
+| `joy releases`                                  | List available Flutter releases from Google's storage API          |
+| `joy default [<version>]`                       | Show or set the global default toolchain                           |
+| `joy override set <version>`                    | Pin a specific version for the current directory                   |
+| `joy override list`                             | List active directory overrides                                    |
+| `joy doctor`                                    | Check that joy is set up correctly                                 |
+| `joy gc`                                        | Run garbage collection on unused cached artifacts                  |
+| `joy completions generate <shell>`              | Print a completion script for the given shell                      |
+| `joy completions install [<shell>]`             | Install shell completions system-wide                              |
 
 ### Install Options
 
@@ -113,11 +113,11 @@ When resolving the active toolchain, joy checks in this order:
 
 ## Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `XDG_DATA_HOME` | Override data directory (default: `~/.local/share`) |
-| `XDG_CACHE_HOME` | Override cache directory (default: `~/.cache`) |
-| `SHELL` | Auto-detection for shell completions |
+| Variable         | Purpose                                             |
+| ---------------- | --------------------------------------------------- |
+| `XDG_DATA_HOME`  | Override data directory (default: `~/.local/share`) |
+| `XDG_CACHE_HOME` | Override cache directory (default: `~/.cache`)      |
+| `SHELL`          | Auto-detection for shell completions                |
 
 ## License
 

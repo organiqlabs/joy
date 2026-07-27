@@ -37,7 +37,14 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(config::git_cache_dir()?)?;
 
     match cli.command {
-        Commands::Releases { all } => releases::list_releases(all),
+        Commands::Releases { all, notes } => match notes {
+            Some(notes_version) => {
+                let active = toolchain::resolve_active_version()?;
+                let target = parse_version(&notes_version)?;
+                releases::show_release_notes_between(&active, &target)
+            }
+            None => releases::list_releases(all),
+        },
         Commands::Gc { git, engines } => cache::run_gc(git, engines),
         Commands::Doctor => doctor::run_doctor(),
         Commands::Default { version } => match version {
