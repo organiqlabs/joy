@@ -1,4 +1,7 @@
 /target
-.helix/
 target/
 *.log
+node_modules/*
+
+.opencode/*
+.helix/

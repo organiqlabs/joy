@@ -6,6 +6,10 @@ use clap_complete::Shell;
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Enable verbose debug output
+    #[arg(short, long, global = true, help = "Enable verbose debug output")]
+    pub verbose: bool,
 }
 
 #[derive(Subcommand)]

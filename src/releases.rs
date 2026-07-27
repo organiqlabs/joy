@@ -176,7 +176,13 @@ pub fn fetch_releases() -> Result<Vec<ReleaseInfo>> {
 
 /// Fetch releases from the remote API, parsing the raw JSON response.
 fn fetch_releases_from_remote(url: &str) -> Result<Vec<ReleaseInfo>> {
-    let resp = reqwest::blocking::get(url).context("Failed to fetch Flutter releases list")?;
+    if crate::is_verbose() {
+        eprintln!("[debug] Fetching release list from {url}");
+    }
+    let resp = crate::http_client()
+        .get(url)
+        .send()
+        .context("Failed to fetch Flutter releases list")?;
     let data: FlutterReleasesResponse = resp
         .json()
         .context("Failed to parse Flutter releases JSON")?;

@@ -16,8 +16,10 @@ use std::path::Path;
 
 /// Download a file with a progress bar
 pub(crate) fn download_with_progress(url: &str, dest: &Path) -> Result<()> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client
+    if crate::is_verbose() {
+        eprintln!("[debug] Downloading {url}");
+    }
+    let resp = crate::http_client()
         .get(url)
         .send()
         .context(format!("Failed to start download from {url}"))?;

@@ -24,6 +24,11 @@ fn parse_version(s: &str) -> Result<Version> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    joy::set_verbose(cli.verbose);
+
+    if joy::is_verbose() {
+        eprintln!("[debug] joy {} starting", env!("CARGO_PKG_VERSION"));
+    }
 
     // Ensure directories exist on startup
     std::fs::create_dir_all(config::envs_dir()?)?;

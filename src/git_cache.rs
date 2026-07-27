@@ -136,11 +136,51 @@ impl GitCache<Fresh> {
 
     /// Transition **Fresh → RemoteDiscovered** by asking the remote which ref
     /// exists for `version`.
+    ///
+    /// **Optimization:** First checks if the ref already exists in the local
+    /// bare repository (from a previous fetch that pulled in multiple refs).
+    /// Only connects to the remote if no local ref is found.
     pub fn discover_ref(
         self,
         remote_url: &str,
         version: &Version,
     ) -> Result<GitCache<RemoteDiscovered>> {
+        let tag_ref = format!("refs/tags/{}", version.as_str());
+        let branch_ref = format!("refs/heads/{}", version.as_str());
+
+        // Check locally first — skip network call if the ref is already cached.
+        if let Ok(mut r) = self.repo.find_reference(&tag_ref) {
+            if r.peel_to_id().is_ok() {
+                if crate::is_verbose() {
+                    eprintln!("[debug] Found local tag ref {tag_ref}");
+                }
+                return Ok(GitCache {
+                    repo: self.repo,
+                    path: self.path,
+                    state: RemoteDiscovered(RefKind::Tag),
+                });
+            }
+        }
+        if let Ok(mut r) = self.repo.find_reference(&branch_ref) {
+            if r.peel_to_id().is_ok() {
+                if crate::is_verbose() {
+                    eprintln!("[debug] Found local branch ref {branch_ref}");
+                }
+                return Ok(GitCache {
+                    repo: self.repo,
+                    path: self.path,
+                    state: RemoteDiscovered(RefKind::Branch),
+                });
+            }
+        }
+
+        if crate::is_verbose() {
+            eprintln!(
+                "[debug] No local ref found for {}, querying remote {remote_url}",
+                version
+            );
+        }
+
         let remote = self
             .repo
             .remote_at(remote_url)
@@ -153,9 +193,6 @@ impl GitCache<Fresh> {
         let (ref_map, _handshake) = connection
             .ref_map(gix::progress::Discard, Default::default())
             .with_context(|| format!("Failed to list refs from {remote_url}"))?;
-
-        let tag_ref = format!("refs/tags/{}", version.as_str());
-        let branch_ref = format!("refs/heads/{}", version.as_str());
 
         for r in &ref_map.remote_refs {
             let name: &gix::bstr::BStr = match r {
@@ -241,7 +278,13 @@ impl GitCache<RemoteDiscovered> {
             .with_context(|| format!("Failed to fetch {version} from {remote_url}"))?;
 
         if matches!(outcome.status, gix::remote::fetch::Status::Change { .. }) {
-            eprintln!("Fetched Flutter {version}");
+            if crate::is_verbose() {
+                eprintln!("[debug] Fetched Flutter {version} from {remote_url}");
+            } else {
+                eprintln!("Fetched Flutter {version}");
+            }
+        } else if crate::is_verbose() {
+            eprintln!("[debug] Shallow fetch for {version}: no change (already up-to-date)");
         }
 
         Ok(GitCache {
