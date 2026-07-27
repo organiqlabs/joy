@@ -113,9 +113,14 @@ fn main() -> Result<()> {
                 )
             }
             Some(cli::ToolchainCommands::Remove { versions }) => {
-                let versions: Result<Vec<Version>> =
+                if versions.is_empty() {
+                    anyhow::bail!(
+                        "No versions specified. Usage: joy toolchain remove <version> [<version>...]"
+                    );
+                }
+                let parsed: Result<Vec<Version>> =
                     versions.iter().map(|v| parse_version(v)).collect();
-                toolchain::remove_many(&versions?)
+                toolchain::remove_many(&parsed?)
             }
             Some(cli::ToolchainCommands::Update { force }) => toolchain::update_active(force),
             Some(cli::ToolchainCommands::List) => toolchain::list(),

@@ -27,8 +27,13 @@ pub struct Version(String);
 impl Version {
     /// Create a `Version` after validating the input string.
     ///
-    /// Rejects empty strings, path separators, parent-dir references (`..`),
-    /// and null bytes — the same checks the old `validate_version` performed.
+    /// Rejects:
+    /// - Empty strings
+    /// - Path separators (`/`, `\`) and null bytes
+    /// - Parent-directory references (`..`)
+    /// - Strings that don't match `^[a-zA-Z0-9._-]+$` — ensures the version
+    ///   looks like a valid version string or channel name (e.g. `3.29.0`,
+    ///   `3.29.0-1.0.pre`, `stable`).
     pub fn new(raw: impl Into<String>) -> Result<Self, ParseVersionError> {
         let raw = raw.into();
         if raw.is_empty() {
@@ -42,6 +47,19 @@ impl Version {
         if raw.contains("..") {
             return Err(ParseVersionError(format!(
                 "Invalid version '{raw}': must not contain parent directory references"
+            )));
+        }
+        if !raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+        {
+            return Err(ParseVersionError(format!(
+                "Invalid version '{raw}': must only contain letters, digits, dots, hyphens, and underscores"
+            )));
+        }
+        if raw.starts_with('.') || raw.starts_with('-') {
+            return Err(ParseVersionError(format!(
+                "Invalid version '{raw}': must not start with a dot or hyphen"
             )));
         }
         Ok(Version(raw))

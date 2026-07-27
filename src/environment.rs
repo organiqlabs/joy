@@ -160,4 +160,3 @@ pub fn remove_version(version: &Version) -> Result<()> {
     println!("   (Cached engine artifacts remain. Run 'joy gc' to free disk space.)");
     Ok(())
 }
-
