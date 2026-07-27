@@ -62,7 +62,11 @@ pub fn cached_versions() -> Result<Vec<String>> {
 /// Returns Ok(()) if the engine directory contains at least one platform subdirectory with files.
 pub fn verify_engine_integrity(engine_dir: &Path) -> Result<()> {
     if !engine_dir.exists() {
-        anyhow::bail!("Engine is not cached at {}", display_path(engine_dir));
+        anyhow::bail!(
+            "Engine is not cached at {}. Use 'joy toolchain install <version> --git' \
+            to automatically download and cache the engine.",
+            display_path(engine_dir)
+        );
     }
     if !engine_dir.is_dir() {
         anyhow::bail!(
@@ -80,7 +84,8 @@ pub fn verify_engine_integrity(engine_dir: &Path) -> Result<()> {
         .collect();
     if entries.is_empty() {
         anyhow::bail!(
-            "Engine cache is empty or corrupted at {}",
+            "Engine cache is empty or corrupted at {}. Try 'joy gc --engines' to clear \
+            and then reinstall.",
             display_path(engine_dir)
         );
     }

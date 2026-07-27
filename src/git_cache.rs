@@ -149,29 +149,29 @@ impl GitCache<Fresh> {
         let branch_ref = format!("refs/heads/{}", version.as_str());
 
         // Check locally first — skip network call if the ref is already cached.
-        if let Ok(mut r) = self.repo.find_reference(&tag_ref) {
-            if r.peel_to_id().is_ok() {
-                if crate::is_verbose() {
-                    eprintln!("[debug] Found local tag ref {tag_ref}");
-                }
-                return Ok(GitCache {
-                    repo: self.repo,
-                    path: self.path,
-                    state: RemoteDiscovered(RefKind::Tag),
-                });
+        if let Ok(mut r) = self.repo.find_reference(&tag_ref)
+            && r.peel_to_id().is_ok()
+        {
+            if crate::is_verbose() {
+                eprintln!("[debug] Found local tag ref {tag_ref}");
             }
+            return Ok(GitCache {
+                repo: self.repo,
+                path: self.path,
+                state: RemoteDiscovered(RefKind::Tag),
+            });
         }
-        if let Ok(mut r) = self.repo.find_reference(&branch_ref) {
-            if r.peel_to_id().is_ok() {
-                if crate::is_verbose() {
-                    eprintln!("[debug] Found local branch ref {branch_ref}");
-                }
-                return Ok(GitCache {
-                    repo: self.repo,
-                    path: self.path,
-                    state: RemoteDiscovered(RefKind::Branch),
-                });
+        if let Ok(mut r) = self.repo.find_reference(&branch_ref)
+            && r.peel_to_id().is_ok()
+        {
+            if crate::is_verbose() {
+                eprintln!("[debug] Found local branch ref {branch_ref}");
             }
+            return Ok(GitCache {
+                repo: self.repo,
+                path: self.path,
+                state: RemoteDiscovered(RefKind::Branch),
+            });
         }
 
         if crate::is_verbose() {

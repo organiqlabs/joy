@@ -91,7 +91,7 @@ pub fn show_current() -> Result<()> {
             );
         }
     } else {
-        println!("No global default set. Use 'joy use -g <version>' to set one.");
+        println!("No global default set. Use 'joy default <version>' to set one.");
     }
 
     Ok(())
@@ -105,7 +105,9 @@ pub fn set_global(version: &Version) -> Result<()> {
     if !env_dir.join("bin").join("flutter").exists()
         && !env_dir.join("bin").join("flutter.bat").exists()
     {
-        anyhow::bail!("Flutter {version} is not installed. Run 'joy install {version}' first.");
+        anyhow::bail!(
+            "Flutter {version} is not installed. Run 'joy toolchain install {version}' first."
+        );
     }
 
     let global_path = config::global_default_path()?;

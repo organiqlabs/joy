@@ -186,6 +186,104 @@ mod tests {
     }
 
     #[test]
+    fn test_version_rejects_special_characters() {
+        assert!(
+            Version::new("foo bar").is_err(),
+            "spaces should be rejected"
+        );
+        assert!(
+            Version::new("foo!bar").is_err(),
+            "exclamation should be rejected"
+        );
+        assert!(
+            Version::new("foo@bar").is_err(),
+            "at-sign should be rejected"
+        );
+        assert!(Version::new("foo#bar").is_err(), "hash should be rejected");
+        assert!(
+            Version::new("foo$bar").is_err(),
+            "dollar should be rejected"
+        );
+        assert!(
+            Version::new("foo%bar").is_err(),
+            "percent should be rejected"
+        );
+        assert!(Version::new("foo^bar").is_err(), "caret should be rejected");
+        assert!(
+            Version::new("foo&bar").is_err(),
+            "ampersand should be rejected"
+        );
+        assert!(
+            Version::new("foo*bar").is_err(),
+            "asterisk should be rejected"
+        );
+        assert!(Version::new("foo+bar").is_err(), "plus should be rejected");
+        assert!(
+            Version::new("foo=bar").is_err(),
+            "equals should be rejected"
+        );
+        assert!(Version::new("foo~bar").is_err(), "tilde should be rejected");
+        assert!(Version::new("foo|bar").is_err(), "pipe should be rejected");
+        assert!(
+            Version::new("foo?bar").is_err(),
+            "question mark should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_version_rejects_leading_dot() {
+        assert!(
+            Version::new(".hidden").is_err(),
+            "leading dot should be rejected"
+        );
+        assert!(
+            Version::new(".3.29.0").is_err(),
+            "leading dot + version should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_version_rejects_leading_hyphen() {
+        assert!(
+            Version::new("-foo").is_err(),
+            "leading hyphen should be rejected"
+        );
+        assert!(
+            Version::new("-3.29.0").is_err(),
+            "leading hyphen + version should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_version_accepts_hyphen_in_middle() {
+        // Hyphens are valid in the middle for pre-release versions
+        assert!(
+            Version::new("3.29.0-1.0.pre").is_ok(),
+            "hyphen in the middle is valid"
+        );
+        assert!(
+            Version::new("3.0.0-dev").is_ok(),
+            "pre-release suffix is valid"
+        );
+        assert!(
+            Version::new("3.0.0-alpha.1").is_ok(),
+            "alpha pre-release is valid"
+        );
+    }
+
+    #[test]
+    fn test_version_accepts_underscore() {
+        assert!(
+            Version::new("3_29_0").is_ok(),
+            "underscores should be accepted"
+        );
+        assert!(
+            Version::new("my_custom_version").is_ok(),
+            "underscore in channel is valid"
+        );
+    }
+
+    #[test]
     fn test_version_display() {
         let v = Version::new("3.29.0").unwrap();
         assert_eq!(v.to_string(), "3.29.0");

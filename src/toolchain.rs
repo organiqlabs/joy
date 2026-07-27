@@ -247,7 +247,9 @@ pub fn set_override(version: &Version) -> Result<()> {
     if !env_dir.join("bin").join("flutter").exists()
         && !env_dir.join("bin").join("flutter.bat").exists()
     {
-        anyhow::bail!("Flutter {version} is not installed. Run 'joy install {version}' first.");
+        anyhow::bail!(
+            "Flutter {version} is not installed. Run 'joy toolchain install {version}' first."
+        );
     }
 
     let cwd = std::env::current_dir()?;
