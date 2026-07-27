@@ -250,6 +250,101 @@ pub fn cache_size() -> u64 {
     }
 }
 
+/// Filter releases within an inclusive date range.
+/// Returns references to releases whose `release_date` falls between `from` and `to`
+/// (both inclusive). Dates are compared as ISO 8601 strings, so `"2025-01-15" <= "2025-06-01"`
+/// compares lexicographically correctly.
+pub fn get_releases_between<'a>(
+    releases: &'a [ReleaseInfo],
+    from: &str,
+    to: &str,
+) -> Vec<&'a ReleaseInfo> {
+    releases
+        .iter()
+        .filter(|r| r.release_date.as_str() >= from && r.release_date.as_str() <= to)
+        .collect()
+}
+
+/// Display the releases between the active version and a target version.
+pub fn show_release_notes_between(
+    active_version: &Version,
+    target_version: &Version,
+) -> Result<()> {
+    let releases = fetch_releases()?;
+
+    // Find release info for both versions
+    let active = find_release(active_version.as_str())?;
+    let target = find_release(target_version.as_str())?;
+
+    // Determine which is earlier/later by release_date
+    let (earlier_date, later_date, earlier_ver, later_ver, direction) =
+        if active.release_date <= target.release_date {
+            (
+                &active.release_date,
+                &target.release_date,
+                active_version,
+                target_version,
+                "upgrading",
+            )
+        } else {
+            (
+                &target.release_date,
+                &active.release_date,
+                target_version,
+                active_version,
+                "rolling back",
+            )
+        };
+
+    println!(
+        "{}  {}",
+        "Release notes:".bold(),
+        format!("{earlier_ver} -> {later_ver} ({direction})").dimmed()
+    );
+    println!();
+
+    let in_range = get_releases_between(&releases, earlier_date, later_date);
+
+    if in_range.is_empty() {
+        println!("  (no releases found in this range)");
+        return Ok(());
+    }
+
+    for release in in_range.iter() {
+        let channel_color = match release.channel.as_str() {
+            "stable" => "green",
+            "beta" => "yellow",
+            _ => "cyan",
+        };
+        let is_active = release.version == *active_version;
+        let is_target = release.version == *target_version;
+        let marker = if is_active {
+            " <- active"
+        } else if is_target {
+            " <- target"
+        } else {
+            ""
+        };
+        println!(
+            "  {} ({}) [{}]{}",
+            release.version.to_string().bold(),
+            release.channel.to_string().color(channel_color),
+            release.release_date,
+            marker,
+        );
+    }
+
+    println!();
+    println!(
+        "{} release{} shown",
+        in_range.len().to_string().bold(),
+        if in_range.len() == 1 { "" } else { "s" }
+    );
+    println!("   Full details at https://docs.flutter.dev/release/release-notes");
+
+    Ok(())
+}
+
 /// Display the releases list to stdout
 pub fn list_releases(show_all: bool) -> Result<()> {
     let releases = fetch_releases()?;
@@ -498,5 +593,121 @@ mod tests {
         assert_eq!(deserialized.len(), 2);
         assert_eq!(deserialized[0].version.as_str(), "3.29.0");
         assert_eq!(deserialized[1].version.as_str(), "3.28.0");
+    }
+
+    // --- pure get_releases_between tests (no cache/XDG setup needed) ---
+
+    fn releases_for_filtering() -> Vec<ReleaseInfo> {
+        vec![
+            ReleaseInfo {
+                version: Version::new("3.30.0").unwrap(),
+                channel: Channel::new("stable").unwrap(),
+                archive_url: "https://example.com/r1.tar.xz".to_string(),
+                sha256: "a".to_string(),
+                release_date: "2025-06-01".to_string(),
+            },
+            ReleaseInfo {
+                version: Version::new("3.29.0").unwrap(),
+                channel: Channel::new("stable").unwrap(),
+                archive_url: "https://example.com/r2.tar.xz".to_string(),
+                sha256: "b".to_string(),
+                release_date: "2025-04-15".to_string(),
+            },
+            ReleaseInfo {
+                version: Version::new("3.28.0").unwrap(),
+                channel: Channel::new("beta").unwrap(),
+                archive_url: "https://example.com/r3.tar.xz".to_string(),
+                sha256: "c".to_string(),
+                release_date: "2025-03-01".to_string(),
+            },
+            ReleaseInfo {
+                version: Version::new("3.27.0").unwrap(),
+                channel: Channel::new("beta").unwrap(),
+                archive_url: "https://example.com/r4.tar.xz".to_string(),
+                sha256: "d".to_string(),
+                release_date: "2025-01-15".to_string(),
+            },
+            ReleaseInfo {
+                version: Version::new("3.26.0").unwrap(),
+                channel: Channel::new("stable").unwrap(),
+                archive_url: "https://example.com/r5.tar.xz".to_string(),
+                sha256: "e".to_string(),
+                release_date: "2024-12-01".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn test_get_releases_between_returns_all_in_range() {
+        let releases = releases_for_filtering();
+        let result = get_releases_between(&releases, "2025-03-01", "2025-06-01");
+        let versions: Vec<&str> = result.iter().map(|r| r.version.as_str()).collect();
+        assert_eq!(versions, vec!["3.30.0", "3.29.0", "3.28.0"]);
+    }
+
+    #[test]
+    fn test_get_releases_between_single_date() {
+        let releases = releases_for_filtering();
+        let result = get_releases_between(&releases, "2025-04-15", "2025-04-15");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].version.as_str(), "3.29.0");
+    }
+
+    #[test]
+    fn test_get_releases_between_empty_range_after_last() {
+        let releases = releases_for_filtering();
+        // All releases are before 2026
+        let result = get_releases_between(&releases, "2026-01-01", "2026-06-01");
+        assert!(result.is_empty(), "no releases in 2026");
+    }
+
+    #[test]
+    fn test_get_releases_between_empty_range_before_first() {
+        let releases = releases_for_filtering();
+        // All releases are after 2020
+        let result = get_releases_between(&releases, "2020-01-01", "2020-06-01");
+        assert!(result.is_empty(), "no releases in 2020");
+    }
+
+    #[test]
+    fn test_get_releases_between_all_releases() {
+        let releases = releases_for_filtering();
+        let result = get_releases_between(&releases, "2024-01-01", "2025-12-31");
+        assert_eq!(result.len(), 5, "all releases");
+    }
+
+    #[test]
+    fn test_get_releases_between_exclusive_upper_bound() {
+        let releases = releases_for_filtering();
+        // "2025-06-01" is the date of 3.30.0. Using a date before it should exclude 3.30.0
+        let result = get_releases_between(&releases, "2025-03-01", "2025-05-31");
+        let versions: Vec<&str> = result.iter().map(|r| r.version.as_str()).collect();
+        assert_eq!(versions, vec!["3.29.0", "3.28.0"]);
+    }
+
+    #[test]
+    fn test_get_releases_between_empty_slice() {
+        let result = get_releases_between(&[], "2025-01-01", "2025-12-31");
+        assert!(result.is_empty(), "empty slice yields empty result");
+    }
+
+    #[test]
+    fn test_get_releases_between_inverted_range() {
+        let releases = releases_for_filtering();
+        // If from > to, the range is empty — no dates can satisfy both >= from and <= to
+        let result = get_releases_between(&releases, "2025-06-01", "2025-03-01");
+        assert!(result.is_empty(), "inverted range yields empty result");
+    }
+
+    #[test]
+    fn test_get_releases_between_preserves_order() {
+        let releases = releases_for_filtering();
+        let result = get_releases_between(&releases, "2024-12-01", "2025-06-01");
+        let versions: Vec<&str> = result.iter().map(|r| r.version.as_str()).collect();
+        // Should preserve the original ordering of the releases slice
+        assert_eq!(
+            versions,
+            vec!["3.30.0", "3.29.0", "3.28.0", "3.27.0", "3.26.0"]
+        );
     }
 }

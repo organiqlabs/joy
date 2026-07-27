@@ -19,6 +19,9 @@ pub enum Commands {
         /// Show all releases (not just recent)
         #[arg(long)]
         all: bool,
+        /// Show releases between the currently active version and <VERSION>
+        #[arg(long, value_name = "VERSION")]
+        notes: Option<String>,
     },
     /// Run garbage collection on unused cached artifacts
     Gc {
