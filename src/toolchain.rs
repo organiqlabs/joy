@@ -369,4 +369,418 @@ mod tests {
         assert!(!envs.join("v1").exists());
         assert!(!envs.join("v2").exists());
     }
+
+    #[test]
+    #[serial]
+    fn test_find_overrides_empty_when_no_files() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let overrides = find_overrides(&tmp);
+        assert!(overrides.is_empty(), "no .joy/override files = empty list");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_overrides_current_dir() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        let version = Version::new("3.29.0").unwrap();
+
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "3.29.0").unwrap();
+
+        let overrides = find_overrides(&tmp);
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].1, version);
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_overrides_parent_dir() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let parent = temp_dir();
+        let child = parent.join("subproject");
+        std::fs::create_dir_all(&child).unwrap();
+
+        // Only parent has the override
+        let op = config::override_path(&parent);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "3.28.0").unwrap();
+
+        // Searching from child should find it
+        let overrides = find_overrides(&child);
+        assert_eq!(overrides.len(), 1, "should find parent override from child");
+        assert_eq!(overrides[0].1.as_str(), "3.28.0");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_overrides_current_and_parent() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let parent = temp_dir();
+        let child = parent.join("sub");
+        std::fs::create_dir_all(&child).unwrap();
+
+        // Override in parent
+        let parent_op = config::override_path(&parent);
+        std::fs::create_dir_all(parent_op.parent().unwrap()).unwrap();
+        std::fs::write(&parent_op, "3.28.0").unwrap();
+
+        // Override in child
+        let child_op = config::override_path(&child);
+        std::fs::create_dir_all(child_op.parent().unwrap()).unwrap();
+        std::fs::write(&child_op, "3.29.0").unwrap();
+
+        let overrides = find_overrides(&child);
+        assert_eq!(overrides.len(), 2, "should find both current and parent");
+        assert_eq!(
+            overrides[0].1.as_str(),
+            "3.29.0",
+            "current dir should be first"
+        );
+        assert_eq!(
+            overrides[1].1.as_str(),
+            "3.28.0",
+            "parent dir should be second"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_overrides_skips_empty_file() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "").unwrap();
+
+        let overrides = find_overrides(&tmp);
+        assert!(
+            overrides.is_empty(),
+            "empty override file should be skipped"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_overrides_skips_invalid_versions() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "../../../etc").unwrap();
+
+        let overrides = find_overrides(&tmp);
+        assert!(
+            overrides.is_empty(),
+            "invalid version strings should be skipped"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_overrides_respects_whitespace_trim() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        let version = Version::new("3.29.0").unwrap();
+
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "  3.29.0  \n").unwrap();
+
+        let overrides = find_overrides(&tmp);
+        assert_eq!(
+            overrides.len(),
+            1,
+            "whitespace-trimmed version should be valid"
+        );
+        assert_eq!(overrides[0].1, version);
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_active_version_fails_with_nothing() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = resolve_active_version();
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert!(
+            result.is_err(),
+            "should fail with no override/project/global"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No active toolchain"),
+            "error should mention no active toolchain"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_active_version_from_override() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        let version = Version::new("3.29.0").unwrap();
+
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "3.29.0").unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = resolve_active_version();
+        std::env::set_current_dir(&orig).unwrap();
+
+        let active = result.expect("should resolve from override");
+        assert_eq!(active, version);
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_active_version_from_global_symlink() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let envs = config::envs_dir().unwrap();
+        let version = Version::new("3.29.0").unwrap();
+
+        // Create a fake installation so the symlink target exists
+        let env_dir = envs.join("3.29.0");
+        let bin_dir = env_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(bin_dir.join("flutter"), b"#!/bin/sh\necho flutter").unwrap();
+
+        // Create the global symlink
+        let global_path = config::global_default_path().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&env_dir, &global_path).unwrap();
+
+        // From a clean temp dir (no override, no .joy.json)
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = resolve_active_version();
+        std::env::set_current_dir(&orig).unwrap();
+
+        let active = result.expect("should resolve from global symlink");
+        assert_eq!(active, version);
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_active_version_override_takes_precedence() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let envs = config::envs_dir().unwrap();
+        let _global_ver = Version::new("3.28.0").unwrap();
+        let override_ver = Version::new("3.29.0").unwrap();
+
+        // Create both installations
+        let global_dir = envs.join("3.28.0");
+        std::fs::create_dir_all(global_dir.join("bin")).unwrap();
+        std::fs::write(global_dir.join("bin").join("flutter"), b"#!/bin/sh").unwrap();
+
+        let global_path = config::global_default_path().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&global_dir, &global_path).unwrap();
+
+        // Override says 3.29.0
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "3.29.0").unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = resolve_active_version();
+        std::env::set_current_dir(&orig).unwrap();
+
+        let active = result.expect("should resolve from override");
+        assert_eq!(
+            active, override_ver,
+            "override should take precedence over global default"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_active_reference_local_override() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        let old_ver = Version::new("3.28.0").unwrap();
+        let new_ver = Version::new("3.29.0").unwrap();
+
+        // Create old override
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "3.28.0").unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = update_active_reference(&old_ver, &new_ver);
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert!(result.is_ok(), "should update local override");
+        let content = std::fs::read_to_string(&op).unwrap();
+        assert_eq!(
+            content.trim(),
+            "3.29.0",
+            "override file should contain new version"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_active_reference_no_match_is_noop() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        let old_ver = Version::new("3.27.0").unwrap();
+        let new_ver = Version::new("3.29.0").unwrap();
+
+        // Create override with a different version
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "3.28.0").unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = update_active_reference(&old_ver, &new_ver);
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert!(result.is_ok(), "no match should still return Ok");
+        let content = std::fs::read_to_string(&op).unwrap();
+        assert_eq!(
+            content.trim(),
+            "3.28.0",
+            "override should remain unchanged when old version doesn't match"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_override_creates_file() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let envs = config::envs_dir().unwrap();
+        let version = Version::new("3.29.0").unwrap();
+
+        // Need a fake installation
+        make_fake_installation_in(&envs, &version);
+
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = set_override(&version);
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert!(result.is_ok(), "set_override should succeed");
+
+        let op = config::override_path(&tmp);
+        assert!(op.exists(), "override file should be created");
+        let content = std::fs::read_to_string(&op).unwrap();
+        assert_eq!(content.trim(), "3.29.0");
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_override_fails_for_uninstalled_version() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let version = Version::new("3.99.0").unwrap();
+
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = set_override(&version);
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert!(result.is_err(), "should fail for uninstalled version");
+        assert!(
+            result.unwrap_err().to_string().contains("not installed"),
+            "error should mention version is not installed"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_list_overrides_empty() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = list_overrides();
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert!(result.is_ok(), "empty overrides should be Ok");
+    }
+
+    #[test]
+    #[serial]
+    fn test_list_overrides_with_override() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let tmp = temp_dir();
+
+        let op = config::override_path(&tmp);
+        std::fs::create_dir_all(op.parent().unwrap()).unwrap();
+        std::fs::write(&op, "3.29.0").unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let result = list_overrides();
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert!(result.is_ok(), "listing overrides should succeed");
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_default_fails_for_uninstalled_version() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let version = Version::new("3.99.0").unwrap();
+        let result = set_default(&version);
+        assert!(result.is_err(), "should fail for uninstalled version");
+        assert!(
+            result.unwrap_err().to_string().contains("not installed"),
+            "error should mention not installed"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_default_creates_symlink() {
+        let (_guard, _data, _cache) = setup_xdg();
+        let envs = config::envs_dir().unwrap();
+        let version = Version::new("3.29.0").unwrap();
+
+        make_fake_installation_in(&envs, &version);
+
+        let result = set_default(&version);
+        assert!(result.is_ok(), "set_default should succeed");
+
+        let global_path = config::global_default_path().unwrap();
+        assert!(
+            global_path.is_symlink(),
+            "global default should be a symlink"
+        );
+
+        let target = std::fs::read_link(&global_path).unwrap();
+        assert_eq!(target, envs.join("3.29.0"));
+    }
 }

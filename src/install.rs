@@ -227,16 +227,28 @@ pub fn install_version(
     // Cleanup archive
     std::fs::remove_file(&archive_path)?;
 
-    if profile.includes_engine()
-        && let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir)
-    {
-        let engine_path = env_dir.join("bin").join("cache").join("engine");
-        if engine_path.exists() {
-            match engine_cache::adopt_engine_dir(&env_dir, engine_ver.as_str()) {
-                Ok(()) => {
-                    println!("Engine {engine_ver} cached globally (shared across versions)");
+    if profile.includes_engine() {
+        match engine_cache::read_engine_version(&env_dir) {
+            Ok(engine_ver) => {
+                let engine_path = env_dir.join("bin").join("cache").join("engine");
+                if engine_path.exists() {
+                    match engine_cache::adopt_engine_dir(&env_dir, engine_ver.as_str()) {
+                        Ok(()) => {
+                            println!(
+                                "Engine {engine_ver} cached globally (shared across versions)"
+                            );
+                        }
+                        Err(e) => eprintln!("Could not adopt engine: {e}"),
+                    }
+                } else {
+                    eprintln!(
+                        "Warning: engine directory not found at {} — engine was not cached",
+                        display_path(&engine_path)
+                    );
                 }
-                Err(e) => eprintln!("Could not adopt engine: {e}"),
+            }
+            Err(e) => {
+                eprintln!("Warning: could not read engine version for caching: {e}");
             }
         }
     }
@@ -308,7 +320,10 @@ pub fn install_version_git_with_profile(
             match artifact {
                 Artifact::FlutterFramework | Artifact::HostDevTools => (),
                 Artifact::HostEngine => {
-                    if !engine_cache::engine_dir(&ev_str)?.exists() {
+                    if !engine_cache::engine_dir(&ev_str)
+                        .ok()
+                        .is_some_and(|d| d.exists())
+                    {
                         println!("Downloading engine {ev_str}...");
                         let ec = ev_str.clone();
                         let engine_task = std::thread::spawn(move || {
@@ -316,8 +331,15 @@ pub fn install_version_git_with_profile(
                         });
                         let result = engine_task
                             .join()
-                            .map_err(|_| anyhow::anyhow!("Engine download thread panicked"))??;
-                        println!("Engine cached at {}", display_path(&result));
+                            .map_err(|_| anyhow::anyhow!("Engine download thread panicked"))?;
+                        if let Err(e) = result {
+                            anyhow::bail!(
+                                "Failed to download engine for {version}: {e}. \
+                                The SDK source is available at {}, but the engine \
+                                was not cached. Use --force to retry.",
+                                display_path(&env_dir)
+                            );
+                        }
                     }
 
                     if let Err(e) = engine_cache::symlink_engine(&env_dir, &ev_str) {

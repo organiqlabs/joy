@@ -85,7 +85,8 @@ pub fn install_completions(shell: Shell, cmd: &mut Command, dir: &Path) -> Resul
         Shell::Fish => "joy.fish",
         Shell::PowerShell => "_joy.ps1",
         Shell::Elvish => "joy.elv",
-        _ => unreachable!(),
+        // Shell is #[non_exhaustive]; return a helpful filename for any future variant.
+        _ => "joy",
     };
     let dest = dir.join(filename);
     let mut file = fs::File::create(&dest).with_context(|| format!("Failed to create {dest:?}"))?;
@@ -116,20 +117,37 @@ pub fn is_completions_installed(shell: ShellVariant) -> bool {
         ShellVariant::Elvish => "joy.elv",
     };
 
-    if shell == ShellVariant::Zsh {
-        return zsh_completion_dirs()
-            .iter()
-            .any(|dir| resolve_home(dir).join(filename).exists());
-    }
-
-    if let Ok(shell_env) = std::env::var("SHELL")
-        && let Some(parent) = Path::new(&shell_env).parent()
-        && parent.join(filename).exists()
-    {
-        return true;
-    }
-
-    false
+    let check_dir = match shell {
+        ShellVariant::Zsh => {
+            return zsh_completion_dirs()
+                .iter()
+                .any(|dir| resolve_home(dir).join(filename).exists());
+        }
+        ShellVariant::Bash => "/etc/bash_completion.d".into(),
+        ShellVariant::Fish => {
+            if let Ok(home) = std::env::var("HOME") {
+                PathBuf::from(home).join(".config/fish/completions")
+            } else {
+                "/etc/fish/completions".into()
+            }
+        }
+        ShellVariant::PowerShell => {
+            // PowerShell profile directories are user-specific; check a common location
+            if let Ok(home) = std::env::var("HOME") {
+                PathBuf::from(home).join(".config/powershell")
+            } else {
+                return false;
+            }
+        }
+        ShellVariant::Elvish => {
+            if let Ok(home) = std::env::var("HOME") {
+                PathBuf::from(home).join(".elvish")
+            } else {
+                return false;
+            }
+        }
+    };
+    check_dir.join(filename).exists()
 }
 
 /// Return a human-friendly installation hint for a shell.

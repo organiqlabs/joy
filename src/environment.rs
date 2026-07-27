@@ -27,9 +27,10 @@ pub fn list_versions() -> Result<()> {
         let path = entry.path();
         if path.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
+            let current_name = get_current_version_name();
             let is_active = current
                 .as_ref()
-                .is_some_and(|c| path == *c || name == get_current_version_name());
+                .is_some_and(|c| path == *c || (!current_name.is_empty() && name == current_name));
 
             if is_active {
                 println!("  {} {}", name.green().bold(), "(active)".green());

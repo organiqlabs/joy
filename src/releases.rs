@@ -32,14 +32,39 @@ pub(crate) fn releases_cache_path() -> Result<PathBuf> {
 }
 
 /// Save a release list to the disk cache.
+/// Failures are logged via eprintln! but do not propagate — the network fetch
+/// already succeeded, so the cache is optional.
 fn save_cache(releases: &[ReleaseInfo]) {
-    if let Ok(json) = serde_json::to_string(releases)
-        && let Ok(dir) = crate::config::releases_cache_dir()
-    {
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(path) = releases_cache_path() {
-            let _ = std::fs::write(path, &json);
+    let json = match serde_json::to_string(releases) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("Warning: could not serialize release cache: {e}");
+            return;
         }
+    };
+    let dir = match crate::config::releases_cache_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Warning: could not determine cache directory: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("Warning: could not create cache directory {dir:?}: {e}");
+        return;
+    }
+    let path = match releases_cache_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Warning: could not determine cache path: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::write(&path, &json) {
+        eprintln!(
+            "Warning: could not write release cache to {}: {e}",
+            path.display()
+        );
     }
 }
 
@@ -224,6 +249,12 @@ pub fn list_releases(show_all: bool) -> Result<()> {
 }
 
 /// Find a release by version string (exact match or channel name).
+///
+/// **Note:** The channel fallback uses `.rev()` to find the "latest" release on
+/// a given channel. This assumes the release list from the API is in descending
+/// order (newest first). If the API changes this ordering, the wrong version
+/// could be selected. Consider using `.max_by_key` on `release_date` instead
+/// if ordering assumptions change.
 pub fn find_release(version: &str) -> Result<ReleaseInfo> {
     let releases = fetch_releases()?;
 

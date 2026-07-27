@@ -51,12 +51,18 @@ pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
 
     let releases_size = releases::cache_size();
     if releases_size > 0 {
-        releases::clear_cache().ok();
-        println!(
-            "  Removed release list cache ({})",
-            human_size(releases_size)
-        );
-        println!("Freed {}", human_size(releases_size).green().bold());
+        match releases::clear_cache() {
+            Ok(()) => {
+                println!(
+                    "  Removed release list cache ({})",
+                    human_size(releases_size)
+                );
+                println!("Freed {}", human_size(releases_size).green().bold());
+            }
+            Err(e) => {
+                eprintln!("Warning: could not clear release list cache: {e}");
+            }
+        }
     } else {
         println!("No release list cache to clean.");
     }
