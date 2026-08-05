@@ -28,7 +28,7 @@ pub enum Artifact {
     FlutterFramework,
     /// Host development tools: dart, dartanalyzer, dartfmt, dart2js, formatter, linter
     HostDevTools,
-    /// Engine binary for the host platform (linux-x64, darwin-x64, windows-x64)
+    /// Engine binary for the host platform (e.g. linux-x64, darwin-arm64, windows-x64)
     HostEngine,
     /// Android engine -- ARM 32-bit
     AndroidEngineArm,

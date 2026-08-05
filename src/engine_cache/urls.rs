@@ -1,12 +1,69 @@
 use crate::profile::Artifact;
+use std::sync::OnceLock;
 
-pub fn host_platform() -> &'static str {
+/// Host OS name in Flutter's engine artifact naming (`linux` | `darwin` |
+/// `windows`).
+pub fn host_os_name() -> &'static str {
     match std::env::consts::OS {
-        "linux" => "linux-x64",
-        "macos" => "darwin-x64",
-        "windows" => "windows-x64",
+        "linux" => "linux",
+        "macos" => "darwin",
+        "windows" => "windows",
         _ => "unknown",
     }
+}
+
+/// Map a machine string (from `uname -m`, `std::env::consts::ARCH`, …) to
+/// Flutter's engine artifact architecture suffix (`x64` | `arm64`).
+///
+/// Returns `None` for architectures Flutter does not publish host-engine
+/// artifacts for.
+fn arch_suffix(machine: &str) -> Option<&'static str> {
+    match machine {
+        "x86_64" | "amd64" | "x64" => Some("x64"),
+        "aarch64" | "arm64" => Some("arm64"),
+        _ => None,
+    }
+}
+
+/// Host CPU architecture in Flutter's engine artifact naming (`x64` | `arm64`).
+///
+/// Detected at runtime via `uname -m` (Linux and macOS) so native installs
+/// fetch the correct engine artifacts — Flutter publishes `*-arm64` directories
+/// alongside `*-x64`. Falls back to the compile-time target arch when `uname` is
+/// unavailable (e.g. stock Windows).
+pub fn host_arch() -> &'static str {
+    static ARCH: OnceLock<&'static str> = OnceLock::new();
+    ARCH.get_or_init(|| {
+        let detected = std::process::Command::new("uname")
+            .arg("-m")
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if let Some(arch) = arch_suffix(&detected) {
+            return arch;
+        }
+        if let Some(arch) = arch_suffix(std::env::consts::ARCH) {
+            return arch;
+        }
+        eprintln!(
+            "Warning: unsupported host architecture (uname: {detected:?}, \
+            build target: {}), defaulting to x64 engine artifacts",
+            std::env::consts::ARCH
+        );
+        "x64"
+    })
+}
+
+/// Flutter engine artifact platform name for the host (e.g. `linux-x64`,
+/// `darwin-arm64`, `windows-x64`).
+pub fn host_platform() -> &'static str {
+    static PLATFORM: OnceLock<&'static str> = OnceLock::new();
+    PLATFORM.get_or_init(|| {
+        let platform = format!("{}-{}", host_os_name(), host_arch());
+        Box::leak(platform.into_boxed_str())
+    })
 }
 
 fn engine_base_url(engine_version: &str) -> String {
@@ -30,9 +87,9 @@ pub fn artifact_download_url(engine_version: &str, artifact: &Artifact) -> Strin
     match artifact {
         Artifact::FlutterFramework | Artifact::HostDevTools => String::new(),
         Artifact::HostEngine => host_engine_url(engine_version),
-        Artifact::DesktopLinux => format!("{base}/linux-x64/artifacts.zip"),
-        Artifact::DesktopMacos => format!("{base}/darwin-x64/artifacts.zip"),
-        Artifact::DesktopWindows => format!("{base}/windows-x64/artifacts.zip"),
+        Artifact::DesktopLinux => format!("{base}/linux-{}/artifacts.zip", host_arch()),
+        Artifact::DesktopMacos => format!("{base}/darwin-{}/artifacts.zip", host_arch()),
+        Artifact::DesktopWindows => format!("{base}/windows-{}/artifacts.zip", host_arch()),
         Artifact::AndroidEngineArm => format!("{base}/android-arm-release/artifacts.zip"),
         Artifact::AndroidEngineArm64 => format!("{base}/android-arm64-release/artifacts.zip"),
         Artifact::AndroidEngineX64 => format!("{base}/android-x64-release/artifacts.zip"),
@@ -45,12 +102,27 @@ pub fn artifact_download_url(engine_version: &str, artifact: &Artifact) -> Strin
     }
 }
 
+/// Cache directory name for a desktop engine platform: `<os>-<host-arch>`.
+fn desktop_subdir(os: &str) -> &'static str {
+    static LINUX: OnceLock<&'static str> = OnceLock::new();
+    static DARWIN: OnceLock<&'static str> = OnceLock::new();
+    static WINDOWS: OnceLock<&'static str> = OnceLock::new();
+    let slot = match os {
+        "linux" => &LINUX,
+        "darwin" => &DARWIN,
+        "windows" => &WINDOWS,
+        _ => return "unknown",
+    };
+    slot.get_or_init(|| Box::leak(format!("{os}-{}", host_arch()).into_boxed_str()))
+}
+
 pub fn artifact_subdir(artifact: &Artifact) -> &'static str {
     match artifact {
         Artifact::FlutterFramework | Artifact::HostDevTools => "",
-        Artifact::HostEngine | Artifact::DesktopLinux => "linux-x64",
-        Artifact::DesktopMacos => "darwin-x64",
-        Artifact::DesktopWindows => "windows-x64",
+        Artifact::HostEngine => host_platform(),
+        Artifact::DesktopLinux => desktop_subdir("linux"),
+        Artifact::DesktopMacos => desktop_subdir("darwin"),
+        Artifact::DesktopWindows => desktop_subdir("windows"),
         Artifact::AndroidEngineArm => "android-arm-release",
         Artifact::AndroidEngineArm64 => "android-arm64-release",
         Artifact::AndroidEngineX64 => "android-x64-release",
@@ -92,15 +164,15 @@ mod tests {
     fn desktop_artifacts_use_their_own_platform_dirs() {
         assert_eq!(
             url(&Artifact::DesktopLinux),
-            format!("{BASE}/linux-x64/artifacts.zip")
+            format!("{BASE}/linux-{}/artifacts.zip", host_arch())
         );
         assert_eq!(
             url(&Artifact::DesktopMacos),
-            format!("{BASE}/darwin-x64/artifacts.zip")
+            format!("{BASE}/darwin-{}/artifacts.zip", host_arch())
         );
         assert_eq!(
             url(&Artifact::DesktopWindows),
-            format!("{BASE}/windows-x64/artifacts.zip")
+            format!("{BASE}/windows-{}/artifacts.zip", host_arch())
         );
     }
 
@@ -173,6 +245,33 @@ mod tests {
     }
 
     #[test]
+    fn arch_suffix_maps_uname_machine_strings() {
+        assert_eq!(arch_suffix("x86_64"), Some("x64"));
+        assert_eq!(arch_suffix("amd64"), Some("x64"));
+        assert_eq!(arch_suffix("x64"), Some("x64"));
+        assert_eq!(arch_suffix("aarch64"), Some("arm64"));
+        assert_eq!(arch_suffix("arm64"), Some("arm64"));
+        assert_eq!(arch_suffix("riscv64"), None);
+        assert_eq!(arch_suffix(""), None);
+    }
+
+    #[test]
+    fn host_platform_follows_flutter_os_arch_naming() {
+        let platform = host_platform();
+        let (os, arch) = platform
+            .split_once('-')
+            .expect("host platform must be <os>-<arch>");
+        assert!(
+            matches!(os, "linux" | "darwin" | "windows"),
+            "os part: {os}"
+        );
+        assert!(matches!(arch, "x64" | "arm64"), "arch part: {arch}");
+        assert_eq!(os, host_os_name());
+        assert_eq!(arch, host_arch());
+        assert_eq!(desktop_subdir(os), platform);
+    }
+
+    #[test]
     fn artifact_subdirs_match_download_urls() {
         // Web artifacts extract into per-renderer dirs but share one download.
         let web = [
@@ -182,9 +281,9 @@ mod tests {
         ];
         let cases = [
             (Artifact::HostEngine, host_platform()),
-            (Artifact::DesktopLinux, "linux-x64"),
-            (Artifact::DesktopMacos, "darwin-x64"),
-            (Artifact::DesktopWindows, "windows-x64"),
+            (Artifact::DesktopLinux, desktop_subdir("linux")),
+            (Artifact::DesktopMacos, desktop_subdir("darwin")),
+            (Artifact::DesktopWindows, desktop_subdir("windows")),
             (Artifact::AndroidEngineArm, "android-arm-release"),
             (Artifact::AndroidEngineArm64, "android-arm64-release"),
             (Artifact::AndroidEngineX64, "android-x64-release"),
