@@ -51,4 +51,4 @@ fs2 = "0.4"
 gix = { version = "0.85.0", features = ["blocking-network-client", "progress-tree", "blocking-http-transport-reqwest-rust-tls"] }
 
 [dev-dependencies]
-serial_test = "3.5.0"
+serial_test = "4.0.1"
