@@ -48,7 +48,7 @@ thiserror = "2.0.18"
 sha2 = "0.11.0"
 hex = "0.4"
 fs2 = "0.4"
-gix = { version = "0.85.0", features = ["blocking-network-client", "progress-tree", "blocking-http-transport-reqwest-rust-tls"] }
+gix = { version = "0.86.0", features = ["blocking-network-client", "progress-tree", "blocking-http-transport-reqwest-rust-tls"] }
 
 [dev-dependencies]
 serial_test = "3.5.0"
