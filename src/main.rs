@@ -109,7 +109,10 @@ fn main() -> Result<()> {
                 skip_checksum,
             }) => {
                 let version = parse_version(&version)?;
-                let profile = Profile::from_str(&profile).unwrap_or_else(|_| Profile::Default);
+                // Fail loudly on a typo'd profile name instead of silently
+                // installing the default profile.
+                let profile = Profile::from_str(&profile)
+                    .map_err(|e| anyhow::anyhow!("Invalid profile: {e}"))?;
                 toolchain::install_with_opts(
                     &version,
                     force,

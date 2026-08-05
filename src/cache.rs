@@ -29,15 +29,23 @@ pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
     }
 
     let git_path = git_cache::git_cache_path()?;
+    let mut git_gc_failed = false;
     if clean_git {
         if git_path.exists() {
             let git_size = git_cache::cache_size();
-            git_cache::clear_cache()?;
-            println!(
-                "  Removed shared Git object cache ({})",
-                human_size(git_size)
-            );
-            println!("Freed {}", human_size(git_size).green().bold());
+            match git_cache::clear_cache() {
+                Ok(()) => {
+                    println!(
+                        "  Removed shared Git object cache ({})",
+                        human_size(git_size)
+                    );
+                    println!("Freed {}", human_size(git_size).green().bold());
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    git_gc_failed = true;
+                }
+            }
         } else {
             println!("No Git object cache to clean.");
         }
@@ -65,6 +73,13 @@ pub fn run_gc(clean_git: bool, clean_engines: bool) -> Result<()> {
         }
     } else {
         println!("No release list cache to clean.");
+    }
+
+    if git_gc_failed {
+        anyhow::bail!(
+            "Git cache was not cleaned — see the message above. Remove the linked \
+            toolchains first, then retry."
+        );
     }
 
     Ok(())

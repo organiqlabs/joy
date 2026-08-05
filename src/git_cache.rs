@@ -418,10 +418,51 @@ pub fn cache_size() -> u64 {
     crate::util::dir_size(&path)
 }
 
+/// Versions of installed toolchains whose worktrees are linked into the shared
+/// bare git cache (their `envs/<version>/.git` is a gitlink *file* pointing at
+/// the bare repo, not a real `.git` directory). Deleting the bare repo would
+/// orphan these worktrees, so `joy gc --git` must refuse while any exist.
+pub(crate) fn git_linked_toolchains() -> Result<Vec<String>> {
+    let envs = config::envs_dir()?;
+    let mut linked = Vec::new();
+    if !envs.exists() {
+        return Ok(linked);
+    }
+    for entry in std::fs::read_dir(&envs)
+        .with_context(|| format!("Failed to read installed toolchains at {}", envs.display()))?
+    {
+        let entry = entry?;
+        if entry.path().join(".git").is_file()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            linked.push(name.to_string());
+        }
+    }
+    linked.sort();
+    Ok(linked)
+}
+
 /// Remove all cached bare repo data and re-initialise.
+///
+/// Refuses to run while any installed git-based toolchain's worktree is linked
+/// into the shared repo: removing it would leave those worktrees' `.git`
+/// gitlinks dangling, breaking in-tree git operations (e.g. `flutter upgrade`)
+/// and forcing a silent full reinstall on next use.
 pub fn clear_cache() -> Result<()> {
-    let path = git_cache_path()?;
+    // Take the git lock *before* the linked-toolchain check: concurrent installs
+    // take the same lock to create worktrees, so no new worktree can appear
+    // between the check and the deletion below.
     let _lock = git_cache_lock()?;
+    let linked = git_linked_toolchains()?;
+    if !linked.is_empty() {
+        anyhow::bail!(
+            "Refusing to clear the shared Git cache: installed toolchain(s) {} \
+            are git-based worktrees linked to it. Uninstall them first with \
+            'joy toolchain remove <version>'.",
+            linked.join(", ")
+        );
+    }
+    let path = git_cache_path()?;
     if path.exists() {
         std::fs::remove_dir_all(&path).context("Failed to remove git cache")?;
     }
@@ -457,4 +498,101 @@ fn worktree_is_valid_str(version: &str) -> bool {
     };
 
     std::path::Path::new(gitdir_path).join("HEAD").exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT_ID: AtomicU32 = AtomicU32::new(70000);
+
+    fn temp_dir() -> PathBuf {
+        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("joy_git_cache_test_{id}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    struct XdgGuard(PathBuf);
+
+    impl Drop for XdgGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("XDG_DATA_HOME");
+                std::env::remove_var("XDG_CACHE_HOME");
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn setup_xdg() -> XdgGuard {
+        let tmp = temp_dir();
+        let data_home = tmp.join("xdg").join("data");
+        let cache_home = tmp.join("xdg").join("cache");
+        std::fs::create_dir_all(&data_home).unwrap();
+        std::fs::create_dir_all(&cache_home).unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &data_home);
+            std::env::set_var("XDG_CACHE_HOME", &cache_home);
+        }
+        XdgGuard(tmp)
+    }
+
+    /// Create a fake installed toolchain. With `gitlink` the `.git` entry is a
+    /// file (git-based worktree); otherwise a real directory (full clone).
+    fn install_fake(version: &str, gitlink: bool) {
+        let env_dir = config::envs_dir().unwrap().join(version);
+        std::fs::create_dir_all(env_dir.join("bin")).unwrap();
+        std::fs::write(env_dir.join("bin").join("flutter"), b"#!/bin/sh\necho fake").unwrap();
+        if gitlink {
+            std::fs::write(env_dir.join(".git"), "gitdir: /nonexistent\n").unwrap();
+        } else {
+            std::fs::create_dir_all(env_dir.join(".git")).unwrap();
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn detects_git_linked_toolchains() {
+        let _guard = setup_xdg();
+        install_fake("3.30.0", true);
+        install_fake("3.29.0", false); // full clone — must not be flagged
+        assert_eq!(git_linked_toolchains().unwrap(), vec!["3.30.0"]);
+    }
+
+    #[test]
+    #[serial]
+    fn detects_none_when_no_toolchains_installed() {
+        let _guard = setup_xdg();
+        assert!(git_linked_toolchains().unwrap().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn clear_cache_refuses_when_toolchains_are_linked() {
+        let _guard = setup_xdg();
+        install_fake("3.30.0", true);
+        let err = clear_cache().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Refusing"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("3.30.0"),
+            "error should name the linked version: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn clear_cache_succeeds_without_linked_toolchains() {
+        let _guard = setup_xdg();
+        install_fake("3.29.0", false); // full clone — safe to GC
+        clear_cache().unwrap();
+        assert!(
+            git_cache_path().unwrap().join("HEAD").exists(),
+            "git cache should be re-initialised after clearing"
+        );
+    }
 }
