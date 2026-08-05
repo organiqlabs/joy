@@ -40,7 +40,12 @@ pub(crate) fn download_with_progress(url: &str, dest: &Path) -> Result<()> {
     ));
 
     let mut dest_file = BufWriter::new(File::create(dest)?);
-    let mut source = resp.take(total_size.max(1));
+    // Only bound the reader when the size is known: with no Content-Length,
+    // total_size is 0 and take(0.max(1)) would truncate the download to 1 byte.
+    let mut source: Box<dyn Read> = match total_size {
+        0 => Box::new(resp),
+        n => Box::new(resp.take(n)),
+    };
 
     let mut downloaded: u64 = 0;
     let mut buffer = [0u8; 8192];
