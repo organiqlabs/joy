@@ -450,8 +450,16 @@ pub fn install_version_git_with_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    // The stall-timeout tests mutate the process-global JOY_DOWNLOAD_STALL_TIMEOUT
+    // env var (and the download tests read it via stall_timeout). std::env::set_var
+    // is not thread-safe against concurrent access, so these must not run in
+    // parallel with each other — otherwise one test can observe another test's
+    // value (e.g. read "-5" while the invalid-values test is mid-loop).
 
     #[test]
+    #[serial]
     fn stall_timeout_defaults_to_60_seconds() {
         unsafe {
             std::env::remove_var("JOY_DOWNLOAD_STALL_TIMEOUT");
@@ -460,6 +468,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn stall_timeout_reads_valid_env_override() {
         unsafe {
             std::env::set_var("JOY_DOWNLOAD_STALL_TIMEOUT", "120");
@@ -471,6 +480,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn stall_timeout_ignores_invalid_env_values() {
         for bad in ["0", "-5", "abc", ""] {
             unsafe {
@@ -558,6 +568,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn download_with_progress_reads_full_body_without_content_length() {
         // Chunked response, no Content-Length: the pre-fix code did
         // `take(total_size.max(1))` → take(1), silently writing a 1-byte file.
@@ -576,6 +587,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn download_with_progress_reads_full_body_with_content_length() {
         let body = pseudo_random_body(100_000);
         let url = serve_once(&body, true);

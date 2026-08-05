@@ -8,6 +8,7 @@ pub fn symlink_engine_to(
     engine_cache_path: &Path,
     engine_version: &str,
 ) -> Result<()> {
+    let _lock = crate::engine_cache::engine_cache_lock()?;
     let engine_link = env_dir.join("bin").join("cache").join("engine");
 
     verify_engine_integrity(engine_cache_path).context(format!(
@@ -46,6 +47,7 @@ pub fn symlink_engine(env_dir: &Path, engine_version: &str) -> Result<()> {
 }
 
 pub fn adopt_engine_dir(env_dir: &Path, engine_version: &str) -> Result<()> {
+    let _lock = crate::engine_cache::engine_cache_lock()?;
     let src = env_dir.join("bin").join("cache").join("engine");
     let dest = engine_dir(engine_version)?;
 

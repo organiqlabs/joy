@@ -18,6 +18,11 @@ pub fn cache_dir() -> Result<PathBuf> {
     config::engine_cache_dir()
 }
 
+/// Exclusive cross-process lock guarding engine cache mutations.
+pub(crate) fn engine_cache_lock() -> Result<crate::lock::FileLock> {
+    crate::lock::FileLock::acquire(&config::engine_cache_lock_path()?)
+}
+
 /// Path to a specific engine version's cached binaries
 pub fn engine_dir(engine_version: &str) -> Result<PathBuf> {
     Ok(cache_dir()?.join(engine_version))
@@ -103,6 +108,7 @@ pub fn cache_size() -> u64 {
 
 /// Remove all cached engines from the central store.
 pub fn clear_cache() -> Result<()> {
+    let _lock = engine_cache_lock()?;
     let dir = cache_dir()?;
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
@@ -117,8 +123,18 @@ pub fn ensure_artifact(
     artifact: &Artifact,
     skip_checksum: bool,
 ) -> Result<PathBuf> {
+    let _lock = engine_cache_lock()?;
+    ensure_artifact_impl(engine_version, artifact, skip_checksum)
+}
+
+/// Lock-free core of [`ensure_artifact`]; callers must hold the engine cache lock.
+fn ensure_artifact_impl(
+    engine_version: &str,
+    artifact: &Artifact,
+    skip_checksum: bool,
+) -> Result<PathBuf> {
     if is_web_artifact(artifact) {
-        ensure_web_sdk(engine_version, skip_checksum)?;
+        ensure_web_sdk_impl(engine_version, skip_checksum)?;
         let subdir = artifact_subdir(artifact);
         let platform_path = engine_dir(engine_version)?.join(subdir);
         if platform_path.exists() {
@@ -180,6 +196,7 @@ pub fn ensure_artifact(
 /// Download an engine archive into the central cache.
 /// Returns the path to the downloaded archive.
 pub fn download_engine(engine_version: &str, skip_checksum: bool) -> Result<PathBuf> {
+    let _lock = engine_cache_lock()?;
     let dest = engine_dir(engine_version)?;
     if dest.exists() {
         return Ok(dest);
@@ -225,6 +242,12 @@ fn extract_web_sdk(archive: &Path, dest: &Path) -> Result<()> {
 
 /// Ensure the shared Flutter web SDK is cached for a given engine version.
 pub fn ensure_web_sdk(engine_version: &str, skip_checksum: bool) -> Result<()> {
+    let _lock = engine_cache_lock()?;
+    ensure_web_sdk_impl(engine_version, skip_checksum)
+}
+
+/// Lock-free core of [`ensure_web_sdk`]; callers must hold the engine cache lock.
+fn ensure_web_sdk_impl(engine_version: &str, skip_checksum: bool) -> Result<()> {
     let marker = web_sdk_marker(engine_version)?;
     if marker.exists() {
         return Ok(());

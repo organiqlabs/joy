@@ -36,6 +36,18 @@ pub fn git_cache_dir() -> Result<PathBuf> {
     Ok(cache_root()?.join("git"))
 }
 
+/// Lock file guarding git cache mutations. Lives *beside* the cache directory
+/// so clearing the cache never unlinks a lock another process is waiting on.
+pub fn git_cache_lock_path() -> Result<PathBuf> {
+    Ok(cache_root()?.join(".git.lock"))
+}
+
+/// Lock file guarding engine cache mutations. Lives *beside* the cache directory
+/// so clearing the cache never unlinks a lock another process is waiting on.
+pub fn engine_cache_lock_path() -> Result<PathBuf> {
+    Ok(cache_root()?.join(".engines.lock"))
+}
+
 pub fn global_default_path() -> Result<PathBuf> {
     Ok(data_root()?.join("default"))
 }

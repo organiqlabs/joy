@@ -7,6 +7,7 @@ pub mod engine_cache;
 pub mod environment;
 pub mod git_cache;
 pub mod install;
+pub mod lock;
 pub mod profile;
 pub mod project;
 pub mod releases;

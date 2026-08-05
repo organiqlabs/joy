@@ -48,6 +48,15 @@ impl<S> GitCache<S> {
 
     /// Remove a worktree and prune stale metadata.
     pub fn remove_worktree(&self, version: &Version) {
+        // Best-effort: cleanup must not fail the whole command if locking is
+        // unavailable, but should still serialize with concurrent fetches.
+        let _lock = match git_cache_lock() {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("Warning: could not lock git cache for worktree cleanup: {e}");
+                None
+            }
+        };
         let env_dir = match config::envs_dir() {
             Ok(d) => d.join(version.as_str()),
             Err(_) => return,
@@ -106,26 +115,28 @@ impl<S> GitCache<S> {
 
 impl GitCache<Fresh> {
     /// Open the existing bare repo at `{cache_root}/git`, or initialise one.
+    ///
+    /// Opening an existing repo is lock-free; only the creation path takes the
+    /// cross-process git cache lock, so two parallel installs that both find an
+    /// uninitialised cache cannot race on `git init`.
     pub fn open_or_init() -> Result<Self> {
         let path = config::git_cache_dir()?;
+        if path.join("HEAD").exists() {
+            let repo = gix::open(&path)
+                .with_context(|| format!("Failed to open git cache at {}", path.display()))?;
+            return Ok(Self {
+                repo,
+                path,
+                state: Fresh,
+            });
+        }
+        let _lock = git_cache_lock()?;
         let repo = if path.join("HEAD").exists() {
+            // Another process initialised it while we waited for the lock.
             gix::open(&path)
                 .with_context(|| format!("Failed to open git cache at {}", path.display()))?
         } else {
-            std::fs::create_dir_all(&path).with_context(|| {
-                format!("Failed to create git cache directory at {}", path.display())
-            })?;
-            let ts_repo = gix::ThreadSafeRepository::init_opts(
-                &path,
-                gix::create::Kind::Bare,
-                gix::create::Options::default(),
-                gix::open::Options::default(),
-            )
-            .with_context(|| {
-                format!("Failed to initialise bare git cache at {}", path.display())
-            })?;
-            let _ = std::fs::create_dir_all(path.join("objects").join("info"));
-            ts_repo.into()
+            init_bare_repo(&path)?
         };
         Ok(Self {
             repo,
@@ -232,6 +243,7 @@ impl GitCache<RemoteDiscovered> {
     /// Transition **RemoteDiscovered → Fresh** by shallow-fetching the
     /// previously-discovered ref into the shared bare repository.
     pub fn fetch_shallow(self, remote_url: &str, version: &Version) -> Result<GitCache<Fresh>> {
+        let _lock = git_cache_lock()?;
         let kind = &self.state.0;
         let refspec = match kind {
             RefKind::Tag => format!(
@@ -301,6 +313,7 @@ impl GitCache<Fresh> {
     /// Create a lightweight worktree (`.git` is a file, not a directory).
     /// The worktree references objects in the shared bare repo.
     pub fn create_worktree(&self, version: &Version, env_dir: &Path) -> Result<()> {
+        let _lock = git_cache_lock()?;
         if let Some(parent) = env_dir.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| "Failed to create parent directory for worktree".to_string())?;
@@ -372,6 +385,27 @@ pub fn git_cache_path() -> Result<PathBuf> {
     config::git_cache_dir()
 }
 
+/// Exclusive cross-process lock guarding git cache mutations.
+fn git_cache_lock() -> Result<crate::lock::FileLock> {
+    crate::lock::FileLock::acquire(&config::git_cache_lock_path()?)
+}
+
+/// Initialise a fresh bare repository at `path`.
+/// Callers must hold the git cache lock when the cache might already exist.
+fn init_bare_repo(path: &Path) -> Result<gix::Repository> {
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("Failed to create git cache directory at {}", path.display()))?;
+    let ts_repo = gix::ThreadSafeRepository::init_opts(
+        path,
+        gix::create::Kind::Bare,
+        gix::create::Options::default(),
+        gix::open::Options::default(),
+    )
+    .with_context(|| format!("Failed to initialise bare git cache at {}", path.display()))?;
+    let _ = std::fs::create_dir_all(path.join("objects").join("info"));
+    Ok(ts_repo.into())
+}
+
 /// Calculate total size of the git object cache on disk.
 pub fn cache_size() -> u64 {
     let path = match git_cache_path() {
@@ -387,10 +421,11 @@ pub fn cache_size() -> u64 {
 /// Remove all cached bare repo data and re-initialise.
 pub fn clear_cache() -> Result<()> {
     let path = git_cache_path()?;
+    let _lock = git_cache_lock()?;
     if path.exists() {
         std::fs::remove_dir_all(&path).context("Failed to remove git cache")?;
     }
-    GitCache::<Fresh>::open_or_init()?;
+    init_bare_repo(&path)?;
     Ok(())
 }
 
