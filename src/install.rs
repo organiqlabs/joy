@@ -13,8 +13,34 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufWriter, Read};
 use std::path::Path;
+use std::time::Duration;
 
-/// Download a file with a progress bar
+/// Default stall timeout: if no bytes arrive for this long, the download is
+/// considered hung and aborted. Configurable via `JOY_DOWNLOAD_STALL_TIMEOUT`
+/// (in seconds).
+const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Resolve the stall/idle timeout from the environment, falling back to
+/// [`DEFAULT_STALL_TIMEOUT`].
+fn stall_timeout() -> Duration {
+    if let Ok(raw) = std::env::var("JOY_DOWNLOAD_STALL_TIMEOUT") {
+        match raw.parse::<u64>() {
+            Ok(secs) if secs > 0 => return Duration::from_secs(secs),
+            _ => eprintln!(
+                "Warning: ignoring invalid JOY_DOWNLOAD_STALL_TIMEOUT={raw:?} (expected positive seconds)"
+            ),
+        }
+    }
+    DEFAULT_STALL_TIMEOUT
+}
+
+/// Download a file with a progress bar.
+///
+/// There is no total download deadline — slow-but-progressing downloads must
+/// never be killed (see `crate::http_client`). Instead, the body is read on a
+/// worker thread and the main thread observes progress via `recv_timeout`,
+/// which acts as a per-chunk idle/stall timeout: if no data arrives within
+/// [`stall_timeout`], the download is considered hung and aborted.
 pub(crate) fn download_with_progress(url: &str, dest: &Path) -> Result<()> {
     if crate::is_verbose() {
         eprintln!("[debug] Downloading {url}");
@@ -42,21 +68,54 @@ pub(crate) fn download_with_progress(url: &str, dest: &Path) -> Result<()> {
     let mut dest_file = BufWriter::new(File::create(dest)?);
     // Only bound the reader when the size is known: with no Content-Length,
     // total_size is 0 and take(0.max(1)) would truncate the download to 1 byte.
-    let mut source: Box<dyn Read> = match total_size {
+    let mut source: Box<dyn Read + Send> = match total_size {
         0 => Box::new(resp),
         n => Box::new(resp.take(n)),
     };
 
-    let mut downloaded: u64 = 0;
-    let mut buffer = [0u8; 8192];
-    loop {
-        let n = std::io::Read::read(&mut source, &mut buffer)?;
-        if n == 0 {
-            break;
+    // Read the body on a worker thread, forwarding each chunk size (or error)
+    // over the channel. The main thread applies the stall timeout.
+    let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<usize>>();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
+        loop {
+            match std::io::Read::read(&mut source, &mut buffer) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    if let Err(e) = std::io::Write::write_all(&mut dest_file, &buffer[..n]) {
+                        let _ = tx.send(Err(e));
+                        break;
+                    }
+                    if tx.send(Ok(n)).is_err() {
+                        break; // main thread gave up (stall detected)
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    break;
+                }
+            }
         }
-        std::io::Write::write_all(&mut dest_file, &buffer[..n])?;
-        downloaded += n as u64;
-        pb.set_position(downloaded);
+    });
+
+    let stall = stall_timeout();
+    let mut downloaded: u64 = 0;
+    loop {
+        match rx.recv_timeout(stall) {
+            Ok(Ok(n)) => {
+                downloaded += n as u64;
+                pb.set_position(downloaded);
+            }
+            Ok(Err(e)) => return Err(e).context("Failed while reading download stream"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                anyhow::bail!(
+                    "Download stalled: no data received for {}s. Retry, or adjust \
+                    JOY_DOWNLOAD_STALL_TIMEOUT.",
+                    stall.as_secs()
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break, // EOF
+        }
     }
 
     pb.finish_with_message(format!(
@@ -386,4 +445,149 @@ pub fn install_version_git_with_profile(
         display_path(&env_dir)
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stall_timeout_defaults_to_60_seconds() {
+        unsafe {
+            std::env::remove_var("JOY_DOWNLOAD_STALL_TIMEOUT");
+        }
+        assert_eq!(stall_timeout(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn stall_timeout_reads_valid_env_override() {
+        unsafe {
+            std::env::set_var("JOY_DOWNLOAD_STALL_TIMEOUT", "120");
+        }
+        assert_eq!(stall_timeout(), Duration::from_secs(120));
+        unsafe {
+            std::env::remove_var("JOY_DOWNLOAD_STALL_TIMEOUT");
+        }
+    }
+
+    #[test]
+    fn stall_timeout_ignores_invalid_env_values() {
+        for bad in ["0", "-5", "abc", ""] {
+            unsafe {
+                std::env::set_var("JOY_DOWNLOAD_STALL_TIMEOUT", bad);
+            }
+            assert_eq!(
+                stall_timeout(),
+                Duration::from_secs(60),
+                "{bad:?} should fall back to the default"
+            );
+        }
+        unsafe {
+            std::env::remove_var("JOY_DOWNLOAD_STALL_TIMEOUT");
+        }
+    }
+
+    /// Serve a single HTTP/1.1 response on an ephemeral local port and return
+    /// the URL to request it at.
+    ///
+    /// With `with_length == true` the response carries a `Content-Length` header;
+    /// with `false` the body is sent chunked with no Content-Length at all (the
+    /// mirror/proxy scenario where the client cannot know the size up front).
+    fn serve_once(body: &[u8], with_length: bool) -> String {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file.bin", listener.local_addr().unwrap());
+        let body = body.to_vec();
+
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // Drain the request head, scanning the *accumulated* bytes so a
+            // \r\n\r\n terminator spanning two reads cannot be missed.
+            let mut head = Vec::with_capacity(1024);
+            let mut tmp = [0u8; 1024];
+            loop {
+                let n = stream.read(&mut tmp).unwrap();
+                if n == 0 {
+                    break;
+                }
+                head.extend_from_slice(&tmp[..n]);
+                if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() > 8192 {
+                    break;
+                }
+            }
+
+            let mut response = String::from("HTTP/1.1 200 OK\r\n");
+            if with_length {
+                response.push_str(&format!("Content-Length: {}\r\n", body.len()));
+                response.push_str("Connection: close\r\n\r\n");
+            } else {
+                response.push_str("Transfer-Encoding: chunked\r\n");
+                response.push_str("Connection: close\r\n\r\n");
+            }
+            let mut out = response.into_bytes();
+            if with_length {
+                out.extend_from_slice(&body);
+            } else {
+                for chunk in body.chunks(16) {
+                    out.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+                    out.extend_from_slice(chunk);
+                    out.extend_from_slice(b"\r\n");
+                }
+                out.extend_from_slice(b"0\r\n\r\n");
+            }
+            let _ = stream.write_all(&out);
+        });
+
+        url
+    }
+
+    fn temp_download_file(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "joy_download_test_{tag}_{}.bin",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn pseudo_random_body(len: usize) -> Vec<u8> {
+        (0..len as u32).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[test]
+    fn download_with_progress_reads_full_body_without_content_length() {
+        // Chunked response, no Content-Length: the pre-fix code did
+        // `take(total_size.max(1))` → take(1), silently writing a 1-byte file.
+        let body = pseudo_random_body(100_000);
+        let url = serve_once(&body, false);
+        let dest = temp_download_file("no_content_length");
+
+        download_with_progress(&url, &dest).expect("chunked download should succeed");
+
+        let downloaded = std::fs::read(&dest).unwrap();
+        assert_eq!(
+            downloaded, body,
+            "download without Content-Length must not be truncated"
+        );
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn download_with_progress_reads_full_body_with_content_length() {
+        let body = pseudo_random_body(100_000);
+        let url = serve_once(&body, true);
+        let dest = temp_download_file("with_content_length");
+
+        download_with_progress(&url, &dest).expect("download with Content-Length should succeed");
+
+        let downloaded = std::fs::read(&dest).unwrap();
+        assert_eq!(
+            downloaded, body,
+            "download with Content-Length must match the body"
+        );
+        let _ = std::fs::remove_file(&dest);
+    }
 }

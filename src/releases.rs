@@ -206,8 +206,12 @@ fn fetch_releases_from_remote(url: &str) -> Result<Vec<ReleaseInfo>> {
     if crate::is_verbose() {
         eprintln!("[debug] Fetching release list from {url}");
     }
+    // The shared client has no overall timeout (large SDK downloads must not be
+    // killed by a wall-clock deadline), but this is a small JSON document, so a
+    // per-request cap is appropriate here.
     let resp = crate::http_client()
         .get(url)
+        .timeout(std::time::Duration::from_secs(60))
         .send()
         .context("Failed to fetch Flutter releases list")?;
     let data: FlutterReleasesResponse = resp
