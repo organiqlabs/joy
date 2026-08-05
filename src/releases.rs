@@ -378,11 +378,10 @@ pub fn list_releases(show_all: bool) -> Result<()> {
 
 /// Find a release by version string (exact match or channel name).
 ///
-/// **Note:** The channel fallback uses `.rev()` to find the "latest" release on
-/// a given channel. This assumes the release list from the API is in descending
-/// order (newest first). If the API changes this ordering, the wrong version
-/// could be selected. Consider using `.max_by_key` on `release_date` instead
-/// if ordering assumptions change.
+/// The channel fallback resolves to the newest release on that channel. It is
+/// selected by `release_date` rather than list position, so the result is
+/// correct regardless of the API's ordering (the release list happens to be
+/// newest-first, but we do not rely on that).
 pub fn find_release(version: &str) -> Result<ReleaseInfo> {
     let releases = fetch_releases()?;
 
@@ -391,11 +390,11 @@ pub fn find_release(version: &str) -> Result<ReleaseInfo> {
         return Ok(r.clone());
     }
 
-    // Try channel match (latest in that channel)
+    // Try channel match (newest release on that channel)
     if let Some(r) = releases
         .iter()
-        .rev()
-        .find(|r| r.channel.as_str() == version)
+        .filter(|r| r.channel.as_str() == version)
+        .max_by_key(|r| &r.release_date)
     {
         return Ok(r.clone());
     }
@@ -593,6 +592,83 @@ mod tests {
         assert_eq!(deserialized.len(), 2);
         assert_eq!(deserialized[0].version.as_str(), "3.29.0");
         assert_eq!(deserialized[1].version.as_str(), "3.28.0");
+    }
+
+    /// Build a release list ordered newest-first (matching the live releases
+    /// API), with several releases on the `stable` channel.
+    fn newest_first_releases() -> Vec<ReleaseInfo> {
+        vec![
+            ReleaseInfo {
+                version: Version::new("3.44.8").unwrap(),
+                channel: Channel::new("stable").unwrap(),
+                archive_url: "https://example.com/3.44.8.tar.xz".to_string(),
+                sha256: "s8".to_string(),
+                release_date: "2026-07-23".to_string(),
+            },
+            ReleaseInfo {
+                version: Version::new("3.44.7").unwrap(),
+                channel: Channel::new("stable").unwrap(),
+                archive_url: "https://example.com/3.44.7.tar.xz".to_string(),
+                sha256: "s7".to_string(),
+                release_date: "2026-07-20".to_string(),
+            },
+            ReleaseInfo {
+                version: Version::new("3.44.6").unwrap(),
+                channel: Channel::new("beta").unwrap(),
+                archive_url: "https://example.com/3.44.6.tar.xz".to_string(),
+                sha256: "b6".to_string(),
+                release_date: "2026-07-09".to_string(),
+            },
+            ReleaseInfo {
+                version: Version::new("1.0.0").unwrap(),
+                channel: Channel::new("stable").unwrap(),
+                archive_url: "https://example.com/1.0.0.tar.xz".to_string(),
+                sha256: "s1".to_string(),
+                release_date: "2018-12-04".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_release_channel_returns_newest_from_newest_first_list() {
+        let _guard = setup_xdg();
+        save_cache(&newest_first_releases());
+
+        // Channel resolution must pick the newest release on the channel, not
+        // the oldest (which `.rev().find()` on a newest-first list returns).
+        let found = find_release("stable").expect("stable channel should resolve");
+        assert_eq!(found.version.as_str(), "3.44.8");
+        assert_eq!(found.release_date, "2026-07-23");
+
+        let beta = find_release("beta").expect("beta channel should resolve");
+        assert_eq!(beta.version.as_str(), "3.44.6");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_release_exact_version_takes_precedence() {
+        let _guard = setup_xdg();
+        save_cache(&newest_first_releases());
+
+        let found = find_release("3.44.7").expect("exact version should resolve");
+        assert_eq!(found.version.as_str(), "3.44.7");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_release_channel_is_independent_of_list_ordering() {
+        let _guard = setup_xdg();
+
+        // Same releases, but ordered oldest-first (the opposite of the live API)
+        // to prove resolution keys off release_date, not list position.
+        let mut releases = newest_first_releases();
+        releases.reverse();
+        save_cache(&releases);
+
+        let found = find_release("stable").expect("stable channel should resolve");
+        assert_eq!(found.version.as_str(), "3.44.8");
+        assert_eq!(found.release_date, "2026-07-23");
     }
 
     // --- pure get_releases_between tests (no cache/XDG setup needed) ---
