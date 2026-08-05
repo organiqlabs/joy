@@ -226,11 +226,9 @@ fn web_sdk_marker(engine_version: &str) -> Result<PathBuf> {
 /// Extract the web SDK archive into the engine cache directory for a specific version.
 fn extract_web_sdk(archive: &Path, dest: &Path) -> Result<()> {
     crate::install::extract_archive(archive, dest)?;
-    for (old, new) in [
-        ("canvaskit", "web-canvaskit"),
-        ("skwasm", "web-skwasm"),
-        ("html", "web-html"),
-    ] {
+    // The in-archive directory names → cache subdirectory mapping lives next
+    // to the URL that fetches this archive (see `urls::web_sdk_entries`).
+    for (old, new) in urls::web_sdk_entries() {
         let from = dest.join(old);
         let to = dest.join(new);
         if from.exists() && !to.exists() {

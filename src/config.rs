@@ -79,5 +79,10 @@ pub struct ReleaseInfo {
     pub channel: Channel,
     pub archive_url: String,
     pub sha256: String,
+    /// Release date as an ISO-8601 string — full timestamps from the API (e.g.
+    /// `2026-07-30T21:19:19.727334Z`), bare dates like `2025-01-15` on the CLI.
+    /// Kept as a string on purpose: ISO-8601 sorts lexicographically, so all
+    /// date comparisons use plain string ordering. Do not migrate to a DateTime
+    /// type without updating those comparisons.
     pub release_date: String,
 }

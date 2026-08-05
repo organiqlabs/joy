@@ -135,6 +135,23 @@ pub fn artifact_subdir(artifact: &Artifact) -> &'static str {
     }
 }
 
+/// Directory names inside the `flutter-web-sdk.zip` archive and the cache
+/// subdirectories they are extracted to.
+///
+/// Kept in this module — next to [`artifact_download_url`] — because the
+/// archive's internal layout and the URL that fetches it are coupled: the
+/// canvaskit/skwasm/html assets live *inside* `flutter-web-sdk.zip`, not under
+/// `web-canvaskit/…`-style paths on the CDN. The web extraction step
+/// (`engine_cache::extract_web_sdk`) consumes this table rather than duplicating
+/// the mapping.
+pub fn web_sdk_entries() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("canvaskit", "web-canvaskit"),
+        ("skwasm", "web-skwasm"),
+        ("html", "web-html"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +233,63 @@ mod tests {
             Artifact::WebEngineHtml,
         ] {
             assert_eq!(url(&artifact), format!("{BASE}/flutter-web-sdk.zip"));
+        }
+    }
+
+    #[test]
+    fn platform_artifact_urls_point_at_artifacts_zip() {
+        // Shape-level guard: if infra ever renames the per-platform archives,
+        // this fails loudly instead of silently downloading from a new path.
+        for artifact in [
+            Artifact::HostEngine,
+            Artifact::DesktopLinux,
+            Artifact::DesktopMacos,
+            Artifact::DesktopWindows,
+            Artifact::AndroidEngineArm,
+            Artifact::AndroidEngineArm64,
+            Artifact::AndroidEngineX64,
+            Artifact::AndroidEngineX86,
+            Artifact::IosEngine,
+            Artifact::IosSimulator,
+        ] {
+            let u = url(&artifact);
+            assert!(
+                u.ends_with("/artifacts.zip"),
+                "{artifact:?} URL should point at <platform>/artifacts.zip: {u}"
+            );
+        }
+        for artifact in [
+            Artifact::WebEngineCanvaskit,
+            Artifact::WebEngineSkwasm,
+            Artifact::WebEngineHtml,
+        ] {
+            assert!(url(&artifact).ends_with("flutter-web-sdk.zip"));
+        }
+        // Non-downloadable artifacts carry no URL at all.
+        assert!(url(&Artifact::FlutterFramework).is_empty());
+        assert!(url(&Artifact::HostDevTools).is_empty());
+    }
+
+    #[test]
+    fn web_sdk_entries_match_artifact_subdirs() {
+        // The in-archive layout table and artifact_subdir must stay in sync,
+        // or web extraction would rename into subdirs the URL logic disagrees
+        // with.
+        let cases = [
+            (Artifact::WebEngineCanvaskit, "canvaskit"),
+            (Artifact::WebEngineSkwasm, "skwasm"),
+            (Artifact::WebEngineHtml, "html"),
+        ];
+        for (artifact, in_zip) in cases {
+            let (_, subdir) = web_sdk_entries()
+                .iter()
+                .find(|(old, _)| old == &in_zip)
+                .unwrap_or_else(|| panic!("{in_zip} missing from web_sdk_entries"));
+            assert_eq!(
+                artifact_subdir(&artifact),
+                *subdir,
+                "{artifact:?} subdir must match the web SDK archive layout"
+            );
         }
     }
 

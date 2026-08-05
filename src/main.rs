@@ -20,7 +20,11 @@ use std::str::FromStr;
 /// Parse a version string at the CLI boundary — the "Parse, don't validate" entry point.
 /// Returns a nice error message on failure.
 fn parse_version(s: &str) -> Result<Version> {
-    Version::new(s).map_err(|e| anyhow::anyhow!("Invalid version '{}': {}", s, e))
+    // Normalize to lowercase: channel names are matched case-sensitively against
+    // the release list, so "STABLE" must resolve to the "stable" channel and
+    // install into envs/stable — not a stray envs/STABLE directory.
+    let normalized = s.to_lowercase();
+    Version::new(&normalized).map_err(|e| anyhow::anyhow!("Invalid version '{}': {}", s, e))
 }
 
 fn main() -> Result<()> {
@@ -135,5 +139,30 @@ fn main() -> Result<()> {
             Some(cli::ToolchainCommands::Update { force }) => toolchain::update_active(force),
             Some(cli::ToolchainCommands::List) => toolchain::list(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_version_normalizes_uppercase_to_lowercase() {
+        assert_eq!(parse_version("STABLE").unwrap().as_str(), "stable");
+        assert_eq!(parse_version("Stable").unwrap().as_str(), "stable");
+        assert_eq!(parse_version("BETA").unwrap().as_str(), "beta");
+        assert_eq!(parse_version("DEV").unwrap().as_str(), "dev");
+        // Concrete versions are unaffected.
+        assert_eq!(parse_version("3.29.0").unwrap().as_str(), "3.29.0");
+        assert_eq!(
+            parse_version("3.29.0-BETA.1").unwrap().as_str(),
+            "3.29.0-beta.1"
+        );
+    }
+
+    #[test]
+    fn parse_version_still_rejects_invalid_input() {
+        let err = parse_version("bad version!").unwrap_err().to_string();
+        assert!(err.contains("Invalid version"), "unexpected error: {err}");
     }
 }

@@ -217,7 +217,7 @@ fn update_active_reference(old: &Version, new: &Version) -> Result<()> {
 }
 
 /// Walk up from cwd to find all .joy/override files
-fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, Version)> {
+pub(crate) fn find_overrides(cwd: &std::path::Path) -> Vec<(PathBuf, Version)> {
     let mut results = Vec::new();
     let mut dir = Some(cwd);
 

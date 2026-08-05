@@ -70,28 +70,52 @@ fn get_current_symlink_target() -> Result<Option<PathBuf>> {
     }
 }
 
-/// Show currently active Flutter version
+/// Show the currently active Flutter version and how it was resolved.
+///
+/// The active version resolves with the same precedence as
+/// `toolchain::resolve_active_version`: nearest `.joy/override` → `.joy.json` →
+/// global default. The override source is reported here too, so the "current
+/// version" shown matches what the rest of joy resolves.
 pub fn show_current() -> Result<()> {
-    // Check project config first
+    // Directory override — nearest .joy/override wins.
+    let cwd = std::env::current_dir()?;
+    let overrides = crate::toolchain::find_overrides(&cwd);
+
+    // Report the effective active version first.
+    match crate::toolchain::resolve_active_version() {
+        Ok(active) => println!("{} {}", "Active:".bold(), active.to_string().green().bold()),
+        Err(_) => println!("{}", "No active toolchain configured.".dimmed()),
+    }
+
+    if let Some((dir, version)) = overrides.first() {
+        println!(
+            "  Override: {} (in {})",
+            version.to_string().green().bold(),
+            display_path(dir)
+        );
+    }
+
+    // Project config (.joy.json)
     if let Some(project_version) = crate::project::read_project_version()? {
         println!(
-            "Project: {} (from .joy.json)",
+            "  Project: {} (from .joy.json)",
             project_version.to_string().green().bold()
         );
     }
 
+    // Global default
     let global_path = config::global_default_path()?;
-    if global_path.is_symlink() {
-        let target = std::fs::read_link(&global_path)?;
-        if let Some(name) = target.file_name() {
-            println!(
-                "Global:  {} -> {}",
-                name.to_string_lossy().green().bold(),
-                display_path(&target)
-            );
-        }
+    if global_path.is_symlink()
+        && let Ok(target) = std::fs::read_link(&global_path)
+        && let Some(name) = target.file_name()
+    {
+        println!(
+            "  Global: {} -> {}",
+            name.to_string_lossy().green().bold(),
+            display_path(&target)
+        );
     } else {
-        println!("No global default set. Use 'joy default <version>' to set one.");
+        println!("  Global: (none)");
     }
 
     Ok(())
