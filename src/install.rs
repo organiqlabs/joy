@@ -45,10 +45,17 @@ pub(crate) fn download_with_progress(url: &str, dest: &Path) -> Result<()> {
     if crate::is_verbose() {
         eprintln!("[debug] Downloading {url}");
     }
+    // Require a successful HTTP status BEFORE creating the destination file:
+    // without this, a 404/500 error page would be written to disk as an SDK
+    // archive — undetectable with --skip-checksum, and a misleading checksum
+    // failure otherwise. error_for_status() surfaces the real HTTP error
+    // (e.g. "404 Not Found") instead.
     let resp = crate::http_client()
         .get(url)
         .send()
-        .context(format!("Failed to start download from {url}"))?;
+        .context(format!("Failed to start download from {url}"))?
+        .error_for_status()
+        .context(format!("Download from {url} failed"))?;
 
     let total_size = resp.content_length().unwrap_or(0);
 
@@ -497,13 +504,13 @@ mod tests {
         }
     }
 
-    /// Serve a single HTTP/1.1 response on an ephemeral local port and return
-    /// the URL to request it at.
+    /// Serve a single HTTP/1.1 response with the given status code on an
+    /// ephemeral local port and return the URL to request it at.
     ///
     /// With `with_length == true` the response carries a `Content-Length` header;
     /// with `false` the body is sent chunked with no Content-Length at all (the
     /// mirror/proxy scenario where the client cannot know the size up front).
-    fn serve_once(body: &[u8], with_length: bool) -> String {
+    fn serve_once(status: u16, body: &[u8], with_length: bool) -> String {
         use std::io::{Read as _, Write as _};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -529,7 +536,12 @@ mod tests {
                 }
             }
 
-            let mut response = String::from("HTTP/1.1 200 OK\r\n");
+            let reason = match status {
+                404 => "Not Found",
+                500 => "Internal Server Error",
+                _ => "Error",
+            };
+            let mut response = format!("HTTP/1.1 {status} {reason}\r\n");
             if with_length {
                 response.push_str(&format!("Content-Length: {}\r\n", body.len()));
                 response.push_str("Connection: close\r\n\r\n");
@@ -573,7 +585,7 @@ mod tests {
         // Chunked response, no Content-Length: the pre-fix code did
         // `take(total_size.max(1))` → take(1), silently writing a 1-byte file.
         let body = pseudo_random_body(100_000);
-        let url = serve_once(&body, false);
+        let url = serve_once(200, &body, false);
         let dest = temp_download_file("no_content_length");
 
         download_with_progress(&url, &dest).expect("chunked download should succeed");
@@ -590,7 +602,7 @@ mod tests {
     #[serial]
     fn download_with_progress_reads_full_body_with_content_length() {
         let body = pseudo_random_body(100_000);
-        let url = serve_once(&body, true);
+        let url = serve_once(200, &body, true);
         let dest = temp_download_file("with_content_length");
 
         download_with_progress(&url, &dest).expect("download with Content-Length should succeed");
@@ -601,5 +613,49 @@ mod tests {
             "download with Content-Length must match the body"
         );
         let _ = std::fs::remove_file(&dest);
+    }
+
+    /// The regression guard for non-success HTTP statuses: an error page must
+    /// never be persisted to the destination, because with --skip-checksum a
+    /// saved 404/500 body would flow straight into archive extraction as a
+    /// corrupt SDK (and even with checksums, the user deserves the real HTTP
+    /// failure rather than a checksum mismatch). `download_with_progress` must
+    /// reject the response before `File::create` is reached.
+    #[test]
+    #[serial]
+    fn download_with_progress_rejects_404_without_creating_file() {
+        let url = serve_once(404, b"<html>Not Found</html>", true);
+        let dest = temp_download_file("http_404");
+
+        let err =
+            download_with_progress(&url, &dest).expect_err("a 404 response must fail the download");
+        // `{err:#}` prints the anyhow chain including the reqwest source error,
+        // which carries the status code.
+        assert!(
+            format!("{err:#}").contains("404"),
+            "error should surface the HTTP status, got: {err:#}"
+        );
+        assert!(
+            !dest.exists(),
+            "no destination file may be created for a failed download"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn download_with_progress_rejects_500_without_creating_file() {
+        let url = serve_once(500, b"<html>Internal Server Error</html>", true);
+        let dest = temp_download_file("http_500");
+
+        let err =
+            download_with_progress(&url, &dest).expect_err("a 500 response must fail the download");
+        assert!(
+            format!("{err:#}").contains("500"),
+            "error should surface the HTTP status, got: {err:#}"
+        );
+        assert!(
+            !dest.exists(),
+            "no destination file may be created for a failed download"
+        );
     }
 }

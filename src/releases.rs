@@ -213,7 +213,9 @@ fn fetch_releases_from_remote(url: &str) -> Result<Vec<ReleaseInfo>> {
         .get(url)
         .timeout(std::time::Duration::from_secs(60))
         .send()
-        .context("Failed to fetch Flutter releases list")?;
+        .context("Failed to fetch Flutter releases list")?
+        .error_for_status()
+        .context("Flutter releases API returned an error status")?;
     let data: FlutterReleasesResponse = resp
         .json()
         .context("Failed to parse Flutter releases JSON")?;
