@@ -23,6 +23,12 @@ pub fn list_versions() -> Result<()> {
         let path = entry.path();
         if path.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
+            // Skip internal staging/backup directories (e.g.
+            // .joy-staging-3.29.0-1234) that a concurrent or interrupted
+            // install may leave behind — they are not installed versions.
+            if name.starts_with('.') {
+                continue;
+            }
             let current_name = get_current_version_name();
             let is_active = current
                 .as_ref()

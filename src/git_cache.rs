@@ -24,8 +24,13 @@ pub struct RemoteDiscovered(pub RefKind);
 //
 // The following transitions are enforced at compile time:
 // ```ignore
-// Fresh ──discover_ref──▶ RemoteDiscovered ──fetch_shallow──▶ Fresh ──create_worktree──▶ ()
+// Fresh ──discover_ref──▶ RemoteDiscovered ──fetch_shallow──▶ Fresh ──checkout_worktree──▶ (staged)
+// staged ──register_worktree──▶ ()
 // ```
+//
+// `checkout_worktree` and `register_worktree` are separate so installs can be
+// staged: the checkout is built in a sibling directory (with any previous
+// installation left intact) and only registered once it is swapped into place.
 
 /// Whether a remote ref is a tag or a branch.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -237,7 +242,7 @@ impl GitCache<Fresh> {
     }
 }
 
-// Discovered state: must call fetch_shallow before create_worktree
+// Discovered state: must call fetch_shallow before checking out
 
 impl GitCache<RemoteDiscovered> {
     /// Transition **RemoteDiscovered → Fresh** by shallow-fetching the
@@ -307,14 +312,19 @@ impl GitCache<RemoteDiscovered> {
     }
 }
 
-// Worktree creation: callable on Fresh (after fetch)
+// Worktree operations: callable on Fresh (after fetch)
 
 impl GitCache<Fresh> {
-    /// Create a lightweight worktree (`.git` is a file, not a directory).
-    /// The worktree references objects in the shared bare repo.
-    pub fn create_worktree(&self, version: &Version, env_dir: &Path) -> Result<()> {
+    /// Check out a version's tree into `dest` **without** registering it as a
+    /// worktree in the bare repo.
+    ///
+    /// Registration is deliberately deferred to [`GitCache::register_worktree`]
+    /// so a staged install can check the replacement out (and download its
+    /// engines) without ever touching the previous worktree's registration —
+    /// a failed install leaves the old installation fully intact.
+    pub fn checkout_worktree(&self, version: &Version, dest: &Path) -> Result<()> {
         let _lock = git_cache_lock()?;
-        if let Some(parent) = env_dir.parent() {
+        if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| "Failed to create parent directory for worktree".to_string())?;
         }
@@ -334,15 +344,30 @@ impl GitCache<Fresh> {
             .peel_to_tree()
             .with_context(|| "Failed to peel commit to tree".to_string())?;
 
-        std::fs::create_dir_all(env_dir).with_context(|| {
-            format!(
-                "Failed to create worktree directory at {}",
-                env_dir.display()
-            )
+        std::fs::create_dir_all(dest).with_context(|| {
+            format!("Failed to create worktree directory at {}", dest.display())
         })?;
 
-        checkout_tree(&tree, env_dir)
-            .with_context(|| format!("Failed to checkout worktree at {}", env_dir.display()))?;
+        checkout_tree(&tree, dest)
+            .with_context(|| format!("Failed to checkout worktree at {}", dest.display()))?;
+
+        Ok(())
+    }
+
+    /// Register `version` as a linked worktree at `env_dir` in the shared bare
+    /// repository (writes `worktrees/{version}/{HEAD,commondir,gitdir}` and the
+    /// worktree's `.git` gitlink).
+    ///
+    /// Overwrites any previous registration for this version — call only after
+    /// the new checkout is in place at `env_dir`.
+    pub fn register_worktree(&self, version: &Version, env_dir: &Path) -> Result<()> {
+        let _lock = git_cache_lock()?;
+        let commit = match self.resolve_ref(version.as_str()) {
+            Ok(id) => id,
+            Err(e) => {
+                anyhow::bail!("Could not resolve ref for version '{}': {e}", version)
+            }
+        };
 
         let worktrees_dir = self
             .repo
@@ -377,6 +402,59 @@ impl GitCache<Fresh> {
             .with_context(|| "Failed to write .git file for worktree".to_string())?;
 
         Ok(())
+    }
+
+    /// Snapshot the bare-repo worktree registration files for `version` (HEAD,
+    /// commondir, gitdir) so a failed replacement install can restore the
+    /// previous linkage. Returns `(path, original content)` triples; `None`
+    /// content means the file did not exist and must be removed on restore.
+    pub fn snapshot_worktree_registration(
+        &self,
+        version: &Version,
+    ) -> Vec<(PathBuf, Option<String>)> {
+        let dir = self
+            .repo
+            .common_dir()
+            .join("worktrees")
+            .join(version.as_str());
+        ["HEAD", "commondir", "gitdir"]
+            .iter()
+            .map(|f| {
+                let path = dir.join(f);
+                let content = std::fs::read_to_string(&path).ok();
+                (path, content)
+            })
+            .collect()
+    }
+}
+
+/// Restore worktree registration files from a snapshot taken by
+/// [`GitCache::snapshot_worktree_registration`]. Best-effort: failures are
+/// logged, since a restore during rollback cannot itself fail the install.
+pub(crate) fn restore_worktree_registration(snapshot: &[(PathBuf, Option<String>)]) {
+    let had_registration = snapshot.iter().any(|(_, content)| content.is_some());
+    for (path, content) in snapshot {
+        match content {
+            Some(original) => {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(path, original) {
+                    eprintln!(
+                        "Warning: failed to restore worktree metadata at {}: {e}",
+                        path.display()
+                    );
+                }
+            }
+            None => {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    // If there was no prior registration, remove the now-empty registration
+    // directory a failed fresh install may have created.
+    if !had_registration && let Some(dir) = snapshot.first().and_then(|(p, _)| p.parent()) {
+        let _ = std::fs::remove_dir(dir); // only succeeds when empty
     }
 }
 
@@ -593,6 +671,81 @@ mod tests {
         assert!(
             git_cache_path().unwrap().join("HEAD").exists(),
             "git cache should be re-initialised after clearing"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_and_restore_worktree_registration() {
+        let tmp = temp_dir();
+        let path = tmp.join("bare");
+        let repo = init_bare_repo(&path).unwrap();
+        let cache = GitCache {
+            repo,
+            path: path.clone(),
+            state: Fresh,
+        };
+        let version = Version::new("3.29.0").unwrap();
+
+        // Simulate a previous git install's registration.
+        let wt = path.join("worktrees").join(version.as_str());
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("HEAD"), "old-head\n").unwrap();
+        std::fs::write(wt.join("commondir"), "../..\n").unwrap();
+        std::fs::write(wt.join("gitdir"), "/old/env/dir\n").unwrap();
+
+        let snapshot = cache.snapshot_worktree_registration(&version);
+
+        // Clobber with a new registration (as register_worktree would).
+        std::fs::write(wt.join("HEAD"), "new-head\n").unwrap();
+        std::fs::write(wt.join("gitdir"), "/new/env/dir\n").unwrap();
+
+        restore_worktree_registration(&snapshot);
+
+        assert_eq!(
+            std::fs::read_to_string(wt.join("HEAD")).unwrap(),
+            "old-head\n",
+            "HEAD must be restored"
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join("gitdir")).unwrap(),
+            "/old/env/dir\n",
+            "gitdir must be restored"
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join("commondir")).unwrap(),
+            "../..\n",
+            "commondir must be restored"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn restore_removes_registration_that_did_not_exist() {
+        let tmp = temp_dir();
+        let path = tmp.join("bare");
+        let repo = init_bare_repo(&path).unwrap();
+        let cache = GitCache {
+            repo,
+            path: path.clone(),
+            state: Fresh,
+        };
+        let version = Version::new("3.29.0").unwrap();
+
+        // No previous registration → snapshot is all None.
+        let snapshot = cache.snapshot_worktree_registration(&version);
+        assert!(snapshot.iter().all(|(_, c)| c.is_none()));
+
+        // A failed install creates a partial registration...
+        let wt = path.join("worktrees").join(version.as_str());
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("HEAD"), "partial\n").unwrap();
+
+        // ...which the restore must remove again.
+        restore_worktree_registration(&snapshot);
+        assert!(
+            !wt.join("HEAD").exists(),
+            "restore must remove registration files that did not exist before"
         );
     }
 }

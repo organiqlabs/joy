@@ -262,11 +262,20 @@ fn test_auto_repair_broken_worktree() {
 
     let cache_path = config::git_cache_dir().unwrap();
     assert!(cache_path.exists(), "cache should exist after install");
-    joy::git_cache::clear_cache().unwrap();
+    // `clear_cache()` now refuses while git-based toolchains are linked (the
+    // gc guard), so simulate the "cache cleared" state directly: removing the
+    // worktree's registration in the bare repo is exactly what an orphaned
+    // worktree looks like after a cache clear.
+    let wt_dir = cache_path.join("worktrees").join(tag);
+    assert!(
+        wt_dir.exists(),
+        "worktree registration should exist after install"
+    );
+    std::fs::remove_dir_all(&wt_dir).unwrap();
 
     assert!(
         !git_cache::worktree_is_valid(tag),
-        "worktree should be broken after cache clear"
+        "worktree should be broken after the registration is removed"
     );
     assert!(
         env_dir.join("bin").join("flutter").exists(),
@@ -337,4 +346,119 @@ fn test_valid_worktree_does_not_auto_repair() {
 fn test_missing_gitlink_is_not_valid() {
     let (_guard, _data_home, _cache_home) = setup_xdg();
     assert!(!git_cache::worktree_is_valid("nonexistent-version"));
+}
+
+/// Names of dot-prefixed internal dirs (staging/backup) in `envs_dir`, if any.
+fn internal_leftovers() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(config::envs_dir().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+#[serial]
+fn failed_force_git_reinstall_preserves_previous_sdk() {
+    let tag = "preserve-failed-v1";
+    let engine_ver = "preserve-engine";
+
+    let (_guard, _data_home, _cache_home) = setup_xdg();
+    let remote_dir = temp_dir();
+    create_test_repo(&remote_dir, tag, engine_ver);
+
+    install::install_version_git_with_profile(
+        &v(tag),
+        Some(remote_dir.to_str().unwrap()),
+        false,
+        &Profile::Minimal,
+        false,
+    )
+    .unwrap();
+
+    let env_dir = config::envs_dir().unwrap().join(tag);
+    let flutter = env_dir.join("bin").join("flutter");
+    assert!(flutter.exists(), "initial install should exist");
+    // Mark the working SDK so we can prove it survives a failed reinstall.
+    std::fs::write(&flutter, "#!/bin/sh\necho ORIGINAL-SDK").unwrap();
+    assert!(
+        git_cache::worktree_is_valid(tag),
+        "worktree should be valid before reinstall"
+    );
+
+    // Force reinstall from a bogus remote: the fetch phase fails before any
+    // local mutation, so the previous SDK must be preserved verbatim.
+    let result = install::install_version_git_with_profile(
+        &v(tag),
+        Some("/nonexistent/joy-e2e-remote"),
+        true,
+        &Profile::Minimal,
+        false,
+    );
+    assert!(result.is_err(), "bogus remote must fail the reinstall");
+
+    assert_eq!(
+        std::fs::read_to_string(&flutter).unwrap(),
+        "#!/bin/sh\necho ORIGINAL-SDK",
+        "failed --force reinstall must preserve the previous SDK"
+    );
+    assert!(
+        git_cache::worktree_is_valid(tag),
+        "failed reinstall must leave the previous worktree linked"
+    );
+    assert!(
+        internal_leftovers().is_empty(),
+        "no staging/backup dirs may remain after a failed reinstall"
+    );
+}
+
+#[test]
+#[serial]
+fn force_git_reinstall_replaces_sdk_and_leaves_no_leftovers() {
+    let tag = "force-replace-v1";
+    let engine_ver = "force-engine";
+
+    let (_guard, _data_home, _cache_home) = setup_xdg();
+    let remote_dir = temp_dir();
+    create_test_repo(&remote_dir, tag, engine_ver);
+
+    install::install_version_git_with_profile(
+        &v(tag),
+        Some(remote_dir.to_str().unwrap()),
+        false,
+        &Profile::Minimal,
+        false,
+    )
+    .unwrap();
+
+    let env_dir = config::envs_dir().unwrap().join(tag);
+    let flutter = env_dir.join("bin").join("flutter");
+    std::fs::write(&flutter, "#!/bin/sh\necho STALE").unwrap();
+
+    // A successful --force reinstall replaces the SDK with a fresh checkout.
+    install::install_version_git_with_profile(
+        &v(tag),
+        Some(remote_dir.to_str().unwrap()),
+        true,
+        &Profile::Minimal,
+        false,
+    )
+    .unwrap();
+
+    let content = std::fs::read_to_string(&flutter).unwrap();
+    assert!(
+        !content.contains("STALE"),
+        "force reinstall should replace the SDK, got: {content}"
+    );
+    assert!(
+        git_cache::worktree_is_valid(tag),
+        "worktree must be valid after a force reinstall"
+    );
+    assert!(
+        internal_leftovers().is_empty(),
+        "no staging/backup dirs may remain after a successful reinstall"
+    );
 }

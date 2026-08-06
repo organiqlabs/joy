@@ -12,7 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufWriter, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Default stall timeout: if no bytes arrive for this long, the download is
@@ -208,6 +208,170 @@ pub(crate) fn verify_sha256(path: &Path, expected_hex: &str) -> Result<()> {
     Ok(())
 }
 
+/// A staged-install rollback guard.
+///
+/// Toolchain installs are transactional: the replacement is fully built in a
+/// sibling staging directory and only swapped into place once validated. This
+/// guard remembers what the swap did (including the git worktree registration
+/// it may overwrite) so that any failure — a bad download, a failed checksum,
+/// failed extraction, or a failed final rename — leaves the previous
+/// installation exactly as it was.
+///
+/// Dropping an armed guard restores the previous installation; [`commit`]
+/// disarms it and deletes the backup after a fully successful install.
+///
+/// [`commit`]: InstallRollback::commit
+struct InstallRollback {
+    env_dir: PathBuf,
+    staging: PathBuf,
+    backup: PathBuf,
+    backup_created: bool,
+    staged_in_place: bool,
+    /// Bare-repo worktree registration files (path → original content; `None`
+    /// means the file did not exist and must be removed on restore).
+    worktree_registration: Vec<(PathBuf, Option<String>)>,
+    disarmed: bool,
+}
+
+impl InstallRollback {
+    fn new(env_dir: &Path, staging: &Path) -> Self {
+        let name = env_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("toolchain");
+        Self {
+            env_dir: env_dir.to_path_buf(),
+            staging: staging.to_path_buf(),
+            backup: env_dir.with_file_name(format!(".joy-backup-{name}-{}", std::process::id())),
+            backup_created: false,
+            staged_in_place: false,
+            worktree_registration: Vec::new(),
+            disarmed: false,
+        }
+    }
+
+    /// Snapshot the previous git worktree registration so it can be restored
+    /// if the replacement install fails after overwriting it.
+    fn capture_worktree_registration(&mut self, cache: &GitCache<Fresh>, version: &Version) {
+        self.worktree_registration = cache.snapshot_worktree_registration(version);
+    }
+
+    /// Disarm the guard and delete the backup: the new installation is in
+    /// place and has been fully validated.
+    fn commit(mut self) {
+        self.disarmed = true;
+        if self.backup_created {
+            let _ = std::fs::remove_dir_all(&self.backup);
+        }
+    }
+}
+
+impl Drop for InstallRollback {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        // If the swap completed but a later step failed, remove the new
+        // installation so the previous one can take its place.
+        if self.staged_in_place
+            && self.env_dir.exists()
+            && let Err(e) = std::fs::remove_dir_all(&self.env_dir)
+        {
+            eprintln!(
+                "Warning: failed to remove partially-installed {}: {e}",
+                self.env_dir.display()
+            );
+        }
+        // Restore the previous installation (only if the new one is gone).
+        if self.backup_created
+            && self.backup.exists()
+            && !self.env_dir.exists()
+            && let Err(e) = std::fs::rename(&self.backup, &self.env_dir)
+        {
+            eprintln!(
+                "CRITICAL: failed to restore previous installation from {} to {}: {e}",
+                self.backup.display(),
+                self.env_dir.display()
+            );
+        }
+        // Discard any leftover staging directory.
+        if self.staging.exists() {
+            let _ = std::fs::remove_dir_all(&self.staging);
+        }
+        // Put the previous git worktree registration back.
+        crate::git_cache::restore_worktree_registration(&self.worktree_registration);
+    }
+}
+
+/// Unique sibling staging directory for building a replacement installation.
+/// Lives inside `envs` so the final rename onto `envs/<version>` stays on the
+/// same filesystem and is atomic.
+fn staging_dir(envs: &Path, version: &Version) -> PathBuf {
+    envs.join(format!(
+        ".joy-staging-{}-{}",
+        version.as_str(),
+        std::process::id()
+    ))
+}
+
+/// Move a fully-built `staging` directory into place at `env_dir`, moving any
+/// existing installation aside to the rollback backup first. Runs `finalize`
+/// (e.g. git worktree registration) after the swap; if it fails, the guard
+/// restores the previous installation.
+fn transactional_replace(
+    env_dir: &Path,
+    staging: &Path,
+    rollback: &mut InstallRollback,
+    finalize: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if env_dir.exists() {
+        let _ = std::fs::remove_dir_all(&rollback.backup);
+        std::fs::rename(env_dir, &rollback.backup).with_context(|| {
+            format!(
+                "Failed to move existing installation aside to {}",
+                rollback.backup.display()
+            )
+        })?;
+        rollback.backup_created = true;
+    }
+    std::fs::rename(staging, env_dir).with_context(|| {
+        format!(
+            "Failed to move staged installation into place at {}",
+            env_dir.display()
+        )
+    })?;
+    rollback.staged_in_place = true;
+    finalize()
+}
+
+/// If the archive extracted a single `flutter*/` top-level directory
+/// (Flutter's release archive layout), move its contents up into `root` and
+/// remove the wrapper. No-op when the archive extracted directly into `root`.
+fn flatten_sdk(root: &Path) -> Result<()> {
+    let extracted = std::fs::read_dir(root)?
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().contains("flutter"))
+        .map(|e| e.path());
+    let Some(extracted) = extracted else {
+        return Ok(());
+    };
+    for entry in std::fs::read_dir(&extracted)? {
+        let entry = entry?;
+        let dest = root.join(entry.file_name());
+        if dest.exists() {
+            std::fs::remove_dir_all(&dest).ok();
+        }
+        std::fs::rename(entry.path(), &dest)?;
+    }
+    std::fs::remove_dir_all(&extracted)?;
+    Ok(())
+}
+
+/// Whether an SDK layout has the expected `bin/flutter` entry point.
+fn has_flutter_binary(root: &Path) -> bool {
+    root.join("bin").join("flutter").exists() || root.join("bin").join("flutter.bat").exists()
+}
+
 /// Install a specific Flutter version with a given profile
 pub fn install_version(
     version: &Version,
@@ -215,20 +379,17 @@ pub fn install_version(
     profile: &Profile,
     skip_checksum: bool,
 ) -> Result<()> {
-    let env_dir = config::envs_dir()?.join(version.as_str());
-    crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let envs = config::envs_dir()?;
+    let env_dir = envs.join(version.as_str());
+    crate::util::check_path_traversal(&env_dir, &envs).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Check if already installed
-    if env_dir.join("bin").join("flutter").exists()
-        || env_dir.join("bin").join("flutter.bat").exists()
-    {
+    if has_flutter_binary(&env_dir) {
         if !force {
             println!("Version {version} is already installed. Use --force to reinstall.");
             return Ok(());
         }
         println!("Reinstalling {version}...");
-        std::fs::remove_dir_all(&env_dir)?;
     }
 
     // Find the release info
@@ -257,7 +418,8 @@ pub fn install_version(
         .split('/')
         .next_back()
         .unwrap_or("flutter.tar.xz");
-    let archive_path = tmp_dir.join(archive_name);
+    // Unique per process so two parallel installs cannot clobber each other.
+    let archive_path = tmp_dir.join(format!("{}-{archive_name}", std::process::id()));
 
     // Download
     download_with_progress(download_url, &archive_path)?;
@@ -270,61 +432,65 @@ pub fn install_version(
         ))?;
     }
 
-    // Extract
-    std::fs::create_dir_all(&env_dir)?;
-    extract_archive(&archive_path, &env_dir)?;
+    // ---- Build the replacement in a sibling staging directory ----
+    // The existing installation is never touched until the staged SDK has been
+    // downloaded, verified, extracted, and validated. On any failure the
+    // rollback guard removes the staging dir and the previous SDK stays intact.
+    let staging = staging_dir(&envs, version);
+    let mut rollback = InstallRollback::new(&env_dir, &staging);
+    std::fs::create_dir_all(&staging)?;
 
-    // Find the extracted flutter directory (archives contain a flutter/ or flutter_*/ directory)
-    let extracted = std::fs::read_dir(&env_dir)?
-        .filter_map(|e| e.ok())
-        .find(|e| e.file_name().to_string_lossy().contains("flutter"))
-        .map(|e| e.path())
-        .unwrap_or_else(|| {
-            // If extraction didn't create a subfolder, the env_dir IS the SDK
-            env_dir.clone()
-        });
+    let build = (|| -> Result<()> {
+        extract_archive(&archive_path, &staging)?;
+        flatten_sdk(&staging)?;
 
-    // If the SDK was extracted to a subdirectory, move contents up
-    if extracted != env_dir {
-        for entry in std::fs::read_dir(&extracted)? {
-            let entry = entry?;
-            let dest = env_dir.join(entry.file_name());
-            if dest.exists() {
-                std::fs::remove_dir_all(&dest).ok();
-            }
-            std::fs::rename(entry.path(), &dest)?;
+        // Verify the expected Flutter layout before replacing anything.
+        if !has_flutter_binary(&staging) {
+            anyhow::bail!(
+                "Downloaded archive for {} does not contain a Flutter SDK \
+                (no bin/flutter after extraction). The existing installation \
+                was preserved.",
+                version
+            );
         }
-        std::fs::remove_dir_all(&extracted)?;
-    }
 
-    // Cleanup archive
-    std::fs::remove_file(&archive_path)?;
-
-    if profile.includes_engine() {
-        match engine_cache::read_engine_version(&env_dir) {
-            Ok(engine_ver) => {
-                let engine_path = env_dir.join("bin").join("cache").join("engine");
-                if engine_path.exists() {
-                    match engine_cache::adopt_engine_dir(&env_dir, engine_ver.as_str()) {
-                        Ok(()) => {
-                            println!(
-                                "Engine {engine_ver} cached globally (shared across versions)"
-                            );
+        if profile.includes_engine() {
+            match engine_cache::read_engine_version(&staging) {
+                Ok(engine_ver) => {
+                    let engine_path = staging.join("bin").join("cache").join("engine");
+                    if engine_path.exists() {
+                        match engine_cache::adopt_engine_dir(&staging, engine_ver.as_str()) {
+                            Ok(()) => {
+                                println!(
+                                    "Engine {engine_ver} cached globally (shared across versions)"
+                                );
+                            }
+                            Err(e) => eprintln!("Could not adopt engine: {e}"),
                         }
-                        Err(e) => eprintln!("Could not adopt engine: {e}"),
+                    } else {
+                        eprintln!(
+                            "Warning: engine directory not found at {} — engine was not cached",
+                            display_path(&engine_path)
+                        );
                     }
-                } else {
-                    eprintln!(
-                        "Warning: engine directory not found at {} — engine was not cached",
-                        display_path(&engine_path)
-                    );
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not read engine version for caching: {e}");
                 }
             }
-            Err(e) => {
-                eprintln!("Warning: could not read engine version for caching: {e}");
-            }
         }
+        Ok(())
+    })();
+    if let Err(e) = build {
+        std::fs::remove_file(&archive_path).ok();
+        return Err(e); // guard drop removes staging; existing install untouched
     }
+
+    // ---- Swap: old → backup, staged → in place ----
+    transactional_replace(&env_dir, &staging, &mut rollback, || Ok(()))?;
+    // Archive cleanup is best-effort — the swap is the point of no return.
+    std::fs::remove_file(&archive_path).ok();
+    rollback.commit();
 
     println!(
         "Flutter {version} installed successfully at {}",
@@ -334,6 +500,13 @@ pub fn install_version(
 }
 
 /// Install a Flutter SDK version via Git with a specific profile.
+///
+/// Transactional: the network phase (ref discovery + shallow fetch) runs first
+/// and touches nothing locally; the new worktree is then checked out into a
+/// sibling staging directory where its engines are resolved. Only after all of
+/// that succeeds is the old installation moved aside and the staged one swapped
+/// into place (and registered as a worktree). A failure at any point — network,
+/// checkout, or engine download — leaves the previous SDK fully intact.
 pub fn install_version_git_with_profile(
     version: &Version,
     repo_url: Option<&str>,
@@ -341,111 +514,128 @@ pub fn install_version_git_with_profile(
     profile: &Profile,
     skip_checksum: bool,
 ) -> Result<()> {
-    let env_dir = config::envs_dir()?.join(version.as_str());
-    crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let envs = config::envs_dir()?;
+    let env_dir = envs.join(version.as_str());
+    crate::util::check_path_traversal(&env_dir, &envs).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let already_installed = env_dir.join("bin").join("flutter").exists()
-        || env_dir.join("bin").join("flutter.bat").exists();
+    let already_installed = has_flutter_binary(&env_dir);
     let is_broken_worktree = already_installed && !git_cache::worktree_is_valid(version.as_str());
 
-    if already_installed {
-        if !force && !is_broken_worktree {
-            println!("Version {version} is already installed. Use --force to reinstall.");
-            return Ok(());
-        }
-        if is_broken_worktree {
-            println!("Worktree for {version} is broken (git cache was cleared). Reinstalling...");
-        } else {
-            println!("Reinstalling {version}...");
-        }
-        let cache = GitCache::<Fresh>::open_or_init()?;
-        cache.remove_worktree(version);
-        std::fs::remove_dir_all(&env_dir).ok();
+    if already_installed && !force && !is_broken_worktree {
+        println!("Version {version} is already installed. Use --force to reinstall.");
+        return Ok(());
+    }
+    if is_broken_worktree {
+        println!("Worktree for {version} is broken (git cache was cleared). Reinstalling...");
+    } else if force && already_installed {
+        println!("Reinstalling {version}...");
     }
 
     let remote = repo_url.unwrap_or("https://github.com/flutter/flutter.git");
     println!("Creating lightweight toolchain for Flutter {version}...");
 
     // Typestate: Git operations in sequence:
-    // Fresh → discover_ref → RemoteDiscovered → fetch_shallow → Fresh → create_worktree
+    // Fresh → discover_ref → RemoteDiscovered → fetch_shallow → Fresh →
+    // checkout_worktree (staged) → register_worktree (after the swap)
     let cache = GitCache::<Fresh>::open_or_init()?;
     let cache = cache.discover_ref(remote, version)?; // Fresh → RemoteDiscovered
     let cache = cache.fetch_shallow(remote, version)?; // RemoteDiscovered → Fresh
-    cache.create_worktree(version, &env_dir)?;
 
-    // Verify the worktree is lightweight (.git is a file, not a dir)
-    let git_link = env_dir.join(".git");
-    if !git_link.is_file() {
-        eprintln!("Toolchain is not a lightweight worktree (.git is a directory)");
-    }
+    // ---- Build the replacement in a sibling staging directory ----
+    // The previous worktree (and its registration) stays fully intact until the
+    // staged SDK is checked out and its engines resolved. `--force` no longer
+    // deletes the previous install up front.
+    let staging = staging_dir(&envs, version);
+    let mut rollback = InstallRollback::new(&env_dir, &staging);
+    rollback.capture_worktree_registration(&cache, version);
 
-    if let Ok(release) = crate::releases::find_release(version.as_str()) {
-        let _ = std::fs::write(
-            env_dir.join("bin").join("internal").join("release_branch"),
-            release.channel.as_str(),
-        );
-    }
+    let build = (|| -> Result<()> {
+        cache.checkout_worktree(version, &staging)?;
 
-    if let Ok(engine_ver) = engine_cache::read_engine_version(&env_dir) {
-        let ev_str = engine_ver.as_str().to_string();
-        for artifact in profile.included_artifacts() {
-            match artifact {
-                Artifact::FlutterFramework | Artifact::HostDevTools => (),
-                Artifact::HostEngine => {
-                    if !engine_cache::engine_dir(&ev_str)
-                        .ok()
-                        .is_some_and(|d| d.exists())
-                    {
-                        println!("Downloading engine {ev_str}...");
-                        let ec = ev_str.clone();
-                        let engine_task = std::thread::spawn(move || {
-                            engine_cache::download_engine(&ec, skip_checksum)
-                        });
-                        let result = engine_task
-                            .join()
-                            .map_err(|_| anyhow::anyhow!("Engine download thread panicked"))?;
-                        if let Err(e) = result {
-                            anyhow::bail!(
-                                "Failed to download engine for {version}: {e}. \
-                                The SDK source is available at {}, but the engine \
-                                was not cached. Use --force to retry.",
-                                display_path(&env_dir)
-                            );
+        // Verify the expected Flutter layout before replacing anything.
+        if !has_flutter_binary(&staging) {
+            anyhow::bail!(
+                "Checked-out commit for {} does not contain a Flutter SDK \
+                (no bin/flutter). The previous installation was preserved.",
+                version
+            );
+        }
+
+        if let Ok(release) = crate::releases::find_release(version.as_str()) {
+            let _ = std::fs::write(
+                staging.join("bin").join("internal").join("release_branch"),
+                release.channel.as_str(),
+            );
+        }
+
+        if let Ok(engine_ver) = engine_cache::read_engine_version(&staging) {
+            let ev_str = engine_ver.as_str().to_string();
+            for artifact in profile.included_artifacts() {
+                match artifact {
+                    Artifact::FlutterFramework | Artifact::HostDevTools => (),
+                    Artifact::HostEngine => {
+                        if !engine_cache::engine_dir(&ev_str)
+                            .ok()
+                            .is_some_and(|d| d.exists())
+                        {
+                            println!("Downloading engine {ev_str}...");
+                            let ec = ev_str.clone();
+                            let engine_task = std::thread::spawn(move || {
+                                engine_cache::download_engine(&ec, skip_checksum)
+                            });
+                            let result = engine_task
+                                .join()
+                                .map_err(|_| anyhow::anyhow!("Engine download thread panicked"))?;
+                            if let Err(e) = result {
+                                anyhow::bail!(
+                                    "Failed to download engine for {version}: {e}. \
+                                    Nothing was installed; the previous installation \
+                                    was preserved."
+                                );
+                            }
+                        }
+
+                        if let Err(e) = engine_cache::symlink_engine(&staging, &ev_str) {
+                            eprintln!("Could not symlink engine: {e}");
                         }
                     }
-
-                    if let Err(e) = engine_cache::symlink_engine(&env_dir, &ev_str) {
-                        eprintln!("Could not symlink engine: {e}");
-                    }
-                }
-                _ => {
-                    let subdir = engine_cache::artifact_subdir(&artifact);
-                    let target = env_dir
-                        .join("bin")
-                        .join("cache")
-                        .join("artifacts")
-                        .join(subdir);
-                    if !target.exists() {
-                        match engine_cache::ensure_artifact(&ev_str, &artifact, skip_checksum) {
-                            Ok(cached) => {
-                                if let Some(parent) = target.parent() {
-                                    std::fs::create_dir_all(parent).ok();
+                    _ => {
+                        let subdir = engine_cache::artifact_subdir(&artifact);
+                        let target = staging
+                            .join("bin")
+                            .join("cache")
+                            .join("artifacts")
+                            .join(subdir);
+                        if !target.exists() {
+                            match engine_cache::ensure_artifact(&ev_str, &artifact, skip_checksum) {
+                                Ok(cached) => {
+                                    if let Some(parent) = target.parent() {
+                                        std::fs::create_dir_all(parent).ok();
+                                    }
+                                    engine_cache::symlink_dir(&cached, &target).ok();
                                 }
-                                engine_cache::symlink_dir(&cached, &target).ok();
-                            }
-                            Err(e) => {
-                                eprintln!("Could not download {:?}: {e}", artifact);
+                                Err(e) => {
+                                    eprintln!("Could not download {:?}: {e}", artifact);
+                                }
                             }
                         }
                     }
                 }
             }
         }
-    }
+        Ok(())
+    })();
+    build?; // guard drop removes staging; previous install untouched
+
+    // ---- Swap: old worktree → backup, staged → in place, then register ----
+    transactional_replace(&env_dir, &staging, &mut rollback, || {
+        cache.register_worktree(version, &env_dir)
+    })?;
 
     // Save profile to sidecar for future update/repair commands
     toolchain_meta::save_profile(version, profile).ok();
+
+    rollback.commit();
 
     println!(
         "Flutter {version} installed at {} (lightweight worktree)",
@@ -656,6 +846,153 @@ mod tests {
         assert!(
             !dest.exists(),
             "no destination file may be created for a failed download"
+        );
+    }
+
+    // ---- Transactional install: failure-injection tests ----
+    //
+    // The whole point of staging + atomic swap is that a failed --force install
+    // must preserve the previous SDK. These tests inject failures at each phase
+    // of the transaction and assert the previous installation survives.
+
+    static TEST_DIR_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    fn temp_dir() -> std::path::PathBuf {
+        let id = TEST_DIR_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("joy_install_test_{id}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fake_sdk(dir: &Path, marker: &str) {
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(
+            dir.join("bin").join("flutter"),
+            format!("#!/bin/sh\necho {marker}"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("marker.txt"), marker).unwrap();
+    }
+
+    fn only_entry_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn failed_build_preserves_previous_sdk() {
+        // Failure BEFORE the swap (e.g. a bad download/checksum/extraction):
+        // the guard must discard the staging dir and leave env_dir untouched.
+        let tmp = temp_dir();
+        let version = Version::new("3.29.0").unwrap();
+        let env_dir = tmp.join(version.as_str());
+        let staging = staging_dir(&tmp, &version);
+        fake_sdk(&env_dir, "OLD");
+        fake_sdk(&staging, "NEW");
+
+        let rollback = InstallRollback::new(&env_dir, &staging);
+        drop(rollback); // simulates an error before the swap
+
+        assert_eq!(
+            std::fs::read_to_string(env_dir.join("marker.txt")).unwrap(),
+            "OLD",
+            "previous SDK must survive a failed build"
+        );
+        assert!(
+            !staging.exists(),
+            "staging dir must be removed after a failed build"
+        );
+        assert_eq!(
+            only_entry_names(&tmp),
+            vec![version.as_str().to_string()],
+            "no staging/backup remnants may remain"
+        );
+    }
+
+    #[test]
+    fn failed_finalize_restores_previous_sdk() {
+        // Failure AFTER the swap moved old→backup and staging→env_dir (e.g. a
+        // failed git registration): the guard must roll the swap back.
+        let tmp = temp_dir();
+        let version = Version::new("3.29.0").unwrap();
+        let env_dir = tmp.join(version.as_str());
+        let staging = staging_dir(&tmp, &version);
+        fake_sdk(&env_dir, "OLD");
+        fake_sdk(&staging, "NEW");
+
+        let mut rollback = InstallRollback::new(&env_dir, &staging);
+        let result = transactional_replace(&env_dir, &staging, &mut rollback, || {
+            anyhow::bail!("injected finalize failure after the swap")
+        });
+        assert!(result.is_err(), "injected finalize failure must propagate");
+        drop(rollback); // triggers restoration
+
+        assert_eq!(
+            std::fs::read_to_string(env_dir.join("marker.txt")).unwrap(),
+            "OLD",
+            "previous SDK must be restored after a failed finalize"
+        );
+        assert!(!staging.exists(), "staging dir must be removed");
+        assert_eq!(
+            only_entry_names(&tmp),
+            vec![version.as_str().to_string()],
+            "backup must not remain after rollback"
+        );
+    }
+
+    #[test]
+    fn failed_finalize_without_previous_removes_everything() {
+        // Fresh install whose finalize fails: nothing may be left behind.
+        let tmp = temp_dir();
+        let version = Version::new("3.29.0").unwrap();
+        let env_dir = tmp.join(version.as_str());
+        let staging = staging_dir(&tmp, &version);
+        fake_sdk(&staging, "NEW");
+
+        let mut rollback = InstallRollback::new(&env_dir, &staging);
+        let result = transactional_replace(&env_dir, &staging, &mut rollback, || {
+            anyhow::bail!("injected finalize failure after the swap")
+        });
+        assert!(result.is_err());
+        drop(rollback);
+
+        assert!(
+            !env_dir.exists(),
+            "failed fresh install must not leave an env dir"
+        );
+        assert!(!staging.exists(), "staging dir must be removed");
+        assert!(only_entry_names(&tmp).is_empty(), "nothing may remain");
+    }
+
+    #[test]
+    fn successful_replace_commits_new_sdk_and_removes_backup() {
+        let tmp = temp_dir();
+        let version = Version::new("3.29.0").unwrap();
+        let env_dir = tmp.join(version.as_str());
+        let staging = staging_dir(&tmp, &version);
+        fake_sdk(&env_dir, "OLD");
+        fake_sdk(&staging, "NEW");
+
+        let mut rollback = InstallRollback::new(&env_dir, &staging);
+        transactional_replace(&env_dir, &staging, &mut rollback, || Ok(())).unwrap();
+        rollback.commit();
+
+        assert_eq!(
+            std::fs::read_to_string(env_dir.join("marker.txt")).unwrap(),
+            "NEW",
+            "new SDK must be in place after a successful swap"
+        );
+        assert!(!staging.exists(), "staging dir must be gone after commit");
+        assert_eq!(
+            only_entry_names(&tmp),
+            vec![version.as_str().to_string()],
+            "backup must be removed after commit"
         );
     }
 }
