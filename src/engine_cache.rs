@@ -174,21 +174,34 @@ fn ensure_artifact_impl(
     std::fs::create_dir_all(&dest)?;
     let tmp_dir = config::tmp_dir()?;
     std::fs::create_dir_all(&tmp_dir)?;
-    let archive_path = tmp_dir.join(format!("engine-{engine_version}-{subdir}.zip"));
+    // Unique per download: parallel installs of the same artifact must not
+    // download into each other's temp file (the final cache write is serialized
+    // by the engine cache lock, but the download itself is not).
+    let archive_path = crate::install::unique_download_path(
+        &tmp_dir,
+        &format!("engine-{engine_version}-{subdir}"),
+        ".zip",
+    );
 
-    crate::install::download_with_progress(&url, &archive_path)?;
+    // Download, verify, extract — the archive is removed on every exit path so
+    // a failed download/verify never leaves a partial file behind.
+    let result = (|| -> Result<()> {
+        crate::install::download_with_progress(&url, &archive_path)?;
 
-    // Verify against saved SHA256, or save for future verification
-    let sidecar = engine_dir(engine_version)?.join(format!(".artifact-{subdir}.sha256"));
-    verify_or_save_sha256(
-        &archive_path,
-        &sidecar,
-        &format!("{engine_version}/{subdir}"),
-        skip_checksum,
-    )?;
+        // Verify against saved SHA256, or save for future verification
+        let sidecar = engine_dir(engine_version)?.join(format!(".artifact-{subdir}.sha256"));
+        verify_or_save_sha256(
+            &archive_path,
+            &sidecar,
+            &format!("{engine_version}/{subdir}"),
+            skip_checksum,
+        )?;
 
-    crate::install::extract_archive(&archive_path, &dest)?;
-    std::fs::remove_file(&archive_path)?;
+        crate::install::extract_archive(&archive_path, &dest)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&archive_path);
+    result?;
 
     Ok(platform_path)
 }
@@ -205,15 +218,23 @@ pub fn download_engine(engine_version: &str, skip_checksum: bool) -> Result<Path
     let url = engine_download_url(engine_version);
     let tmp_dir = config::tmp_dir()?;
     std::fs::create_dir_all(&tmp_dir)?;
-    let archive_path = tmp_dir.join(format!("engine-{engine_version}.zip"));
+    // Unique per download so parallel installs of the same engine version never
+    // download into each other's temp file.
+    let archive_path =
+        crate::install::unique_download_path(&tmp_dir, &format!("engine-{engine_version}"), ".zip");
 
-    crate::install::download_with_progress(&url, &archive_path)?;
+    // Download, verify, extract — the archive is removed on every exit path.
+    let result = (|| -> Result<()> {
+        crate::install::download_with_progress(&url, &archive_path)?;
 
-    let sidecar = engine_dir(engine_version)?.join(".engine.sha256");
-    verify_or_save_sha256(&archive_path, &sidecar, engine_version, skip_checksum)?;
+        let sidecar = engine_dir(engine_version)?.join(".engine.sha256");
+        verify_or_save_sha256(&archive_path, &sidecar, engine_version, skip_checksum)?;
 
-    crate::install::extract_archive(&archive_path, &dest)?;
-    std::fs::remove_file(&archive_path)?;
+        crate::install::extract_archive(&archive_path, &dest)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&archive_path);
+    result?;
 
     Ok(dest)
 }
@@ -255,19 +276,30 @@ fn ensure_web_sdk_impl(engine_version: &str, skip_checksum: bool) -> Result<()> 
     let url = artifact_download_url(engine_version, &Artifact::WebEngineCanvaskit);
     let tmp_dir = config::tmp_dir()?;
     std::fs::create_dir_all(&tmp_dir)?;
-    let archive_path = tmp_dir.join(format!("engine-{engine_version}-web-sdk.zip"));
-    crate::install::download_with_progress(&url, &archive_path)?;
+    // Unique per download so parallel installs never share a temp file.
+    let archive_path = crate::install::unique_download_path(
+        &tmp_dir,
+        &format!("engine-{engine_version}-web-sdk"),
+        ".zip",
+    );
 
-    let sidecar = engine_dir(engine_version)?.join(".web-sdk.sha256");
-    verify_or_save_sha256(
-        &archive_path,
-        &sidecar,
-        &format!("{engine_version}/web-sdk"),
-        skip_checksum,
-    )?;
+    // Download, verify, extract — the archive is removed on every exit path.
+    let result = (|| -> Result<()> {
+        crate::install::download_with_progress(&url, &archive_path)?;
 
-    extract_web_sdk(&archive_path, &dest)?;
-    std::fs::remove_file(&archive_path)?;
+        let sidecar = engine_dir(engine_version)?.join(".web-sdk.sha256");
+        verify_or_save_sha256(
+            &archive_path,
+            &sidecar,
+            &format!("{engine_version}/web-sdk"),
+            skip_checksum,
+        )?;
+
+        extract_web_sdk(&archive_path, &dest)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&archive_path);
+    result?;
     std::fs::write(&marker, b"1")?;
     Ok(())
 }

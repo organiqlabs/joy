@@ -181,6 +181,24 @@ pub(crate) fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     }
 }
 
+/// Build a unique temporary download path in `dir` that keeps `suffix` (e.g.
+/// `.tar.xz` or `.zip`) so archive extraction can still sniff the format from
+/// the file name.
+///
+/// The name is unique across processes (pid) and within a process (nanos + a
+/// monotonic counter), so parallel installs of the same version or artifact can
+/// never download into each other's file. Downloads are deliberately not
+/// globally serialized, so the temp files must not collide.
+pub(crate) fn unique_download_path(dir: &Path, stem: &str, suffix: &str) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    dir.join(format!("{stem}.{}.{nanos}.{n}{suffix}", std::process::id()))
+}
+
 /// Verify a file's SHA256 checksum against the expected hex string.
 /// Returns an error if the file doesn't exist or the checksum doesn't match.
 pub(crate) fn verify_sha256(path: &Path, expected_hex: &str) -> Result<()> {
@@ -418,29 +436,41 @@ pub fn install_version(
         .split('/')
         .next_back()
         .unwrap_or("flutter.tar.xz");
-    // Unique per process so two parallel installs cannot clobber each other.
-    let archive_path = tmp_dir.join(format!("{}-{archive_name}", std::process::id()));
-
-    // Download
-    download_with_progress(download_url, &archive_path)?;
-
-    // Verify SHA256 checksum (unless skipped)
-    if !skip_checksum {
-        verify_sha256(&archive_path, &release.sha256).context(format!(
-            "SHA256 mismatch for {} — downloaded file is corrupted or incomplete",
-            release.version
-        ))?;
-    }
+    // Split off the format suffix so the unique path keeps it (extract_archive
+    // sniffs the format from the name). Unique per download, so parallel
+    // installs cannot clobber each other's archive.
+    let (stem, suffix) = if let Some(s) = archive_name.strip_suffix(".tar.xz") {
+        (s.to_string(), ".tar.xz".to_string())
+    } else if let Some(s) = archive_name.strip_suffix(".zip") {
+        (s.to_string(), ".zip".to_string())
+    } else {
+        (archive_name.to_string(), String::new())
+    };
+    let archive_path = unique_download_path(&tmp_dir, &stem, &suffix);
 
     // ---- Build the replacement in a sibling staging directory ----
     // The existing installation is never touched until the staged SDK has been
     // downloaded, verified, extracted, and validated. On any failure the
     // rollback guard removes the staging dir and the previous SDK stays intact.
+    // The download + checksum live inside this closure so the archive is
+    // removed on every exit path (a failed download would otherwise leave a
+    // partial file behind in tmp).
     let staging = staging_dir(&envs, version);
     let mut rollback = InstallRollback::new(&env_dir, &staging);
     std::fs::create_dir_all(&staging)?;
 
     let build = (|| -> Result<()> {
+        // Download
+        download_with_progress(download_url, &archive_path)?;
+
+        // Verify SHA256 checksum (unless skipped)
+        if !skip_checksum {
+            verify_sha256(&archive_path, &release.sha256).context(format!(
+                "SHA256 mismatch for {} — downloaded file is corrupted or incomplete",
+                release.version
+            ))?;
+        }
+
         extract_archive(&archive_path, &staging)?;
         flatten_sdk(&staging)?;
 
@@ -847,6 +877,104 @@ mod tests {
             !dest.exists(),
             "no destination file may be created for a failed download"
         );
+    }
+
+    #[test]
+    fn unique_download_path_returns_distinct_paths_and_keeps_suffix() {
+        let dir = temp_dir();
+        let a = unique_download_path(&dir, "engine-1.0", ".zip");
+        let b = unique_download_path(&dir, "engine-1.0", ".zip");
+        let c = unique_download_path(&dir, "flutter_linux_3.29.0", ".tar.xz");
+
+        assert_ne!(a, b, "two downloads of the same artifact must not collide");
+        assert!(
+            a.to_string_lossy().ends_with(".zip"),
+            "suffix must be preserved so extraction can sniff the format"
+        );
+        assert!(
+            c.to_string_lossy().ends_with(".tar.xz"),
+            "suffix must be preserved so extraction can sniff the format"
+        );
+        assert!(
+            !a.exists() && !b.exists() && !c.exists(),
+            "paths are handed to the caller uncreated (File::create owns them)"
+        );
+    }
+
+    /// Serve the same response body to two connections on one port, simulating
+    /// two parallel install processes downloading the same artifact.
+    fn serve_twice(body: &[u8]) -> String {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/artifact.zip", listener.local_addr().unwrap());
+        let body = body.to_vec();
+
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut head = Vec::with_capacity(1024);
+                let mut tmp = [0u8; 1024];
+                loop {
+                    let n = stream.read(&mut tmp).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    head.extend_from_slice(&tmp[..n]);
+                    if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() > 8192 {
+                        break;
+                    }
+                }
+                let mut out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .into_bytes();
+                out.extend_from_slice(&body);
+                let _ = stream.write_all(&out);
+            }
+        });
+
+        url
+    }
+
+    #[test]
+    #[serial]
+    fn parallel_downloads_to_unique_paths_do_not_clobber() {
+        // Two concurrent downloads of the same artifact, like two parallel joy
+        // install processes sharing ~/.cache/joy/tmp. With deterministic names
+        // both would write to the same file and corrupt each other; unique
+        // paths must keep both downloads intact.
+        let body = pseudo_random_body(50_000);
+        let url = serve_twice(&body);
+        let dir = temp_dir();
+        let dest_a = unique_download_path(&dir, "engine-1.0", ".zip");
+        let dest_b = unique_download_path(&dir, "engine-1.0", ".zip");
+        assert_ne!(dest_a, dest_b);
+
+        let url_a = url.clone();
+        let url_b = url;
+        let a_dest = dest_a.clone();
+        let b_dest = dest_b.clone();
+        let a = std::thread::spawn(move || download_with_progress(&url_a, &a_dest));
+        let b = std::thread::spawn(move || download_with_progress(&url_b, &b_dest));
+        a.join().unwrap().expect("first download should succeed");
+        b.join().unwrap().expect("second download should succeed");
+
+        assert_eq!(
+            std::fs::read(&dest_a).unwrap(),
+            body,
+            "first download must be intact"
+        );
+        assert_eq!(
+            std::fs::read(&dest_b).unwrap(),
+            body,
+            "second download must be intact"
+        );
+        let _ = std::fs::remove_file(&dest_a);
+        let _ = std::fs::remove_file(&dest_b);
     }
 
     // ---- Transactional install: failure-injection tests ----
