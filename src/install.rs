@@ -11,8 +11,10 @@ use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::fs::File;
-use std::io::{BufWriter, Read};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Default stall timeout: if no bytes arrive for this long, the download is
@@ -37,10 +39,19 @@ fn stall_timeout() -> Duration {
 /// Download a file with a progress bar.
 ///
 /// There is no total download deadline — slow-but-progressing downloads must
-/// never be killed (see `crate::http_client`). Instead, the body is read on a
-/// worker thread and the main thread observes progress via `recv_timeout`,
-/// which acts as a per-chunk idle/stall timeout: if no data arrives within
-/// [`stall_timeout`], the download is considered hung and aborted.
+/// never be killed (see `crate::http_client`). Instead, a stall/idle timeout
+/// is applied per chunk: if no data arrives within [`stall_timeout`], the
+/// download is aborted.
+///
+/// Lifecycle: the destination file is written **synchronously** by this
+/// (caller) thread, so no writer can ever outlive the call — a caller may
+/// immediately delete or reuse `dest` once this returns. Network reads happen
+/// on a detached "pump" thread that forwards chunks over a bounded channel; it
+/// is the only thread that can block on a stalled connection, and it never
+/// touches the destination. A cancellation flag makes the pump bail early
+/// between reads; it reaps itself when the connection delivers/closes (a
+/// blocked `send` is also interrupted as soon as the channel is dropped), and
+/// it is joined on the normal completion paths.
 pub(crate) fn download_with_progress(url: &str, dest: &Path) -> Result<()> {
     if crate::is_verbose() {
         eprintln!("[debug] Downloading {url}");
@@ -73,32 +84,36 @@ pub(crate) fn download_with_progress(url: &str, dest: &Path) -> Result<()> {
     ));
 
     let mut dest_file = BufWriter::new(File::create(dest)?);
+
+    // The pump reads the response and forwards chunks over a bounded channel
+    // (capacity 4 → at most ~256 KiB of buffered body, so a slow disk can't
+    // balloon memory). It can block on a stalled connection without ever
+    // touching the destination; dropping the channel below makes its next send
+    // fail, and the cancellation flag lets it bail early between reads.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pump_cancel = Arc::clone(&cancel);
+    let (chunk_tx, chunk_rx) = std::sync::mpsc::sync_channel::<std::io::Result<Vec<u8>>>(4);
     // Only bound the reader when the size is known: with no Content-Length,
     // total_size is 0 and take(0.max(1)) would truncate the download to 1 byte.
     let mut source: Box<dyn Read + Send> = match total_size {
         0 => Box::new(resp),
         n => Box::new(resp.take(n)),
     };
-
-    // Read the body on a worker thread, forwarding each chunk size (or error)
-    // over the channel. The main thread applies the stall timeout.
-    let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<usize>>();
-    std::thread::spawn(move || {
-        let mut buffer = [0u8; 8192];
+    let pump = std::thread::spawn(move || {
+        let mut buffer = [0u8; 65536];
         loop {
+            if pump_cancel.load(Ordering::SeqCst) {
+                break;
+            }
             match std::io::Read::read(&mut source, &mut buffer) {
-                Ok(0) => break, // EOF
+                Ok(0) => break, // EOF — dropping the sender signals the reader
                 Ok(n) => {
-                    if let Err(e) = std::io::Write::write_all(&mut dest_file, &buffer[..n]) {
-                        let _ = tx.send(Err(e));
-                        break;
-                    }
-                    if tx.send(Ok(n)).is_err() {
-                        break; // main thread gave up (stall detected)
+                    if chunk_tx.send(Ok(buffer[..n].to_vec())).is_err() {
+                        break; // caller gave up (stall detected)
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(Err(e));
+                    let _ = chunk_tx.send(Err(e));
                     break;
                 }
             }
@@ -108,23 +123,40 @@ pub(crate) fn download_with_progress(url: &str, dest: &Path) -> Result<()> {
     let stall = stall_timeout();
     let mut downloaded: u64 = 0;
     loop {
-        match rx.recv_timeout(stall) {
-            Ok(Ok(n)) => {
-                downloaded += n as u64;
+        match chunk_rx.recv_timeout(stall) {
+            Ok(Ok(chunk)) => {
+                if let Err(e) = dest_file.write_all(&chunk) {
+                    cancel.store(true, Ordering::SeqCst);
+                    // The pump may still be blocked on the network; do not join
+                    // (it never touches dest, and a blocked send is unblocked
+                    // when the channel drops with this return).
+                    return Err(e).context("Failed while writing download stream");
+                }
+                downloaded += chunk.len() as u64;
                 pb.set_position(downloaded);
             }
-            Ok(Err(e)) => return Err(e).context("Failed while reading download stream"),
+            Ok(Err(e)) => {
+                cancel.store(true, Ordering::SeqCst);
+                let _ = pump.join(); // pump already finished — reap it
+                return Err(e).context("Failed while reading download stream");
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                cancel.store(true, Ordering::SeqCst);
                 anyhow::bail!(
                     "Download stalled: no data received for {}s. Retry, or adjust \
                     JOY_DOWNLOAD_STALL_TIMEOUT.",
                     stall.as_secs()
                 );
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break, // EOF
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // EOF: the pump finished and dropped the channel — reap it.
+                let _ = pump.join();
+                break;
+            }
         }
     }
 
+    dest_file.flush()?;
     pb.finish_with_message(format!(
         "Downloaded {}",
         url.split('/').next_back().unwrap_or(url)
@@ -724,6 +756,25 @@ mod tests {
         }
     }
 
+    /// Read and discard a test client's request head (up to the `\r\n\r\n`
+    /// terminator, scanning accumulated bytes so a terminator spanning two
+    /// reads cannot be missed).
+    fn drain_request_head(stream: &mut std::net::TcpStream) {
+        use std::io::Read as _;
+        let mut head = Vec::with_capacity(1024);
+        let mut tmp = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut tmp).unwrap();
+            if n == 0 {
+                break;
+            }
+            head.extend_from_slice(&tmp[..n]);
+            if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() > 8192 {
+                break;
+            }
+        }
+    }
+
     /// Serve a single HTTP/1.1 response with the given status code on an
     /// ephemeral local port and return the URL to request it at.
     ///
@@ -731,7 +782,7 @@ mod tests {
     /// with `false` the body is sent chunked with no Content-Length at all (the
     /// mirror/proxy scenario where the client cannot know the size up front).
     fn serve_once(status: u16, body: &[u8], with_length: bool) -> String {
-        use std::io::{Read as _, Write as _};
+        use std::io::Write as _;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/file.bin", listener.local_addr().unwrap());
@@ -741,21 +792,7 @@ mod tests {
             let Ok((mut stream, _)) = listener.accept() else {
                 return;
             };
-            // Drain the request head, scanning the *accumulated* bytes so a
-            // \r\n\r\n terminator spanning two reads cannot be missed.
-            let mut head = Vec::with_capacity(1024);
-            let mut tmp = [0u8; 1024];
-            loop {
-                let n = stream.read(&mut tmp).unwrap();
-                if n == 0 {
-                    break;
-                }
-                head.extend_from_slice(&tmp[..n]);
-                if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() > 8192 {
-                    break;
-                }
-            }
-
+            drain_request_head(&mut stream);
             let reason = match status {
                 404 => "Not Found",
                 500 => "Internal Server Error",
@@ -904,7 +941,7 @@ mod tests {
     /// Serve the same response body to two connections on one port, simulating
     /// two parallel install processes downloading the same artifact.
     fn serve_twice(body: &[u8]) -> String {
-        use std::io::{Read as _, Write as _};
+        use std::io::Write as _;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/artifact.zip", listener.local_addr().unwrap());
@@ -915,18 +952,7 @@ mod tests {
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
-                let mut head = Vec::with_capacity(1024);
-                let mut tmp = [0u8; 1024];
-                loop {
-                    let n = stream.read(&mut tmp).unwrap();
-                    if n == 0 {
-                        break;
-                    }
-                    head.extend_from_slice(&tmp[..n]);
-                    if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() > 8192 {
-                        break;
-                    }
-                }
+                drain_request_head(&mut stream);
                 let mut out = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
@@ -935,6 +961,35 @@ mod tests {
                 out.extend_from_slice(&body);
                 let _ = stream.write_all(&out);
             }
+        });
+
+        url
+    }
+
+    /// Serve HTTP headers announcing a large Content-Length but never send the
+    /// body: the client's network read blocks (a stalled download). The
+    /// connection is closed after a few seconds so the reader pump can reap
+    /// itself.
+    fn serve_stalled() -> String {
+        use std::io::Write as _;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/stall.bin", listener.local_addr().unwrap());
+
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            drain_request_head(&mut stream);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                1_000_000
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.flush();
+            // Hold the connection open (stall), then close it so the blocked
+            // reader thread can finish.
+            std::thread::sleep(Duration::from_secs(5));
         });
 
         url
@@ -975,6 +1030,61 @@ mod tests {
         );
         let _ = std::fs::remove_file(&dest_a);
         let _ = std::fs::remove_file(&dest_b);
+    }
+
+    /// A stalled download (server announces a body but never sends it) must
+    /// fail promptly with the stall error, and must leave **no background
+    /// writer** behind: the destination is written synchronously by the caller
+    /// thread, so a retry to the same path is deterministic.
+    #[test]
+    #[serial]
+    fn stall_aborts_promptly_and_leaves_no_background_writer() {
+        unsafe {
+            std::env::set_var("JOY_DOWNLOAD_STALL_TIMEOUT", "1");
+        }
+        let stalled_url = serve_stalled();
+        let dest = temp_download_file("stall");
+
+        let start = std::time::Instant::now();
+        let err = download_with_progress(&stalled_url, &dest)
+            .expect_err("a stalled download must fail with an error");
+        let elapsed = start.elapsed();
+
+        assert!(
+            format!("{err:#}").contains("stalled"),
+            "error should report the stall, got: {err:#}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(400) && elapsed < Duration::from_secs(8),
+            "stall must be detected after the configured timeout, took {elapsed:?}"
+        );
+
+        // No background writer may remain active after the call returns: the
+        // destination size must be stable, and a retry to the SAME path must
+        // succeed with the exact body (a lingering writer would truncate/race
+        // the retry's file).
+        let size_after_stall = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+        std::thread::sleep(Duration::from_millis(300));
+        let size_later = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(
+            size_after_stall, size_later,
+            "no background writer may touch the destination after the stall returns"
+        );
+
+        let body = pseudo_random_body(100_000);
+        let ok_url = serve_once(200, &body, true);
+        download_with_progress(&ok_url, &dest)
+            .expect("a retry to the same destination must succeed");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            body,
+            "retry must produce the exact body (no stale-writer corruption)"
+        );
+
+        let _ = std::fs::remove_file(&dest);
+        unsafe {
+            std::env::remove_var("JOY_DOWNLOAD_STALL_TIMEOUT");
+        }
     }
 
     // ---- Transactional install: failure-injection tests ----
