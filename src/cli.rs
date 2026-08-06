@@ -31,6 +31,9 @@ pub enum Commands {
         /// Also clean the shared engine cache
         #[arg(long)]
         engines: bool,
+        /// Also clean the cached release list
+        #[arg(long)]
+        releases: bool,
     },
     /// Check that joy is set up correctly
     Doctor,

@@ -49,7 +49,11 @@ fn main() -> Result<()> {
             }
             None => releases::list_releases(all),
         },
-        Commands::Gc { git, engines } => cache::run_gc(git, engines),
+        Commands::Gc {
+            git,
+            engines,
+            releases,
+        } => cache::run_gc(git, engines, releases),
         Commands::Doctor => doctor::run_doctor(),
         Commands::Default { version } => match version {
             Some(v) => {
