@@ -3,7 +3,7 @@ use crate::types::Version;
 use crate::util::display_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// List all installed Flutter versions
 pub fn list_versions() -> Result<()> {
@@ -127,6 +127,81 @@ pub fn show_current() -> Result<()> {
     Ok(())
 }
 
+/// Replace the global default symlink so it points at `target`.
+///
+/// Atomicity: the new link is created **beside** the existing one (never over
+/// it) and then renamed into place with `std::fs::rename`. On Unix,
+/// `rename(2)` swaps the destination entry in a single atomic operation, so at
+/// every instant a reader sees either the old default or the new one — never
+/// none. This removes the previous remove-then-create window where an
+/// interruption left the user without a global default at all.
+///
+/// **Windows fallback:** `std::fs::rename` (MoveFileEx + `MOVEFILE_REPLACE_EXISTING`)
+/// cannot reliably replace an existing *directory* symlink in place — Windows
+/// treats it as a directory, and the OS can refuse the atomic replace. When
+/// the atomic rename fails, we fall back to remove-then-rename, which is **not**
+/// atomic: a crash between the removal and the rename would leave no default.
+/// That is the narrowest window Windows allows for directory-symlink
+/// replacement without admin privileges / Developer Mode (replacing reparse
+/// points in place is documented as unreliable there). On non-Windows
+/// platforms a failed rename is surfaced as an error instead — no fallback is
+/// needed because the atomic path never fails for an existing symlink.
+fn replace_global_symlink(global_path: &Path, target: &Path) -> Result<()> {
+    let parent = global_path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", global_path.display()))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+
+    let file_name = global_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("default");
+    // Unique per process so two concurrent `joy default` runs cannot collide,
+    // and lives beside the real link so `rename` stays on one filesystem.
+    let tmp = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    // A stale temp link from a previously interrupted run must not block us.
+    let _ = std::fs::remove_file(&tmp);
+
+    crate::engine_cache::symlink_dir(target, &tmp)
+        .with_context(|| format!("Failed to create global symlink at {}", tmp.display()))?;
+
+    match std::fs::rename(&tmp, global_path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            #[cfg(windows)]
+            {
+                // Atomic replacement of an existing directory symlink is not
+                // guaranteed on Windows — fall back to remove-then-rename.
+                let outcome = (|| -> std::io::Result<()> {
+                    if global_path.exists() || global_path.is_symlink() {
+                        std::fs::remove_file(&global_path)?;
+                    }
+                    std::fs::rename(&tmp, global_path)
+                })();
+                // The temp link is only reclaimed after the fallback finishes.
+                let _ = std::fs::remove_file(&tmp);
+                outcome.with_context(|| {
+                    format!(
+                        "Failed to replace global symlink at {} (atomic rename failed: {e})",
+                        global_path.display()
+                    )
+                })
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = std::fs::remove_file(&tmp);
+                Err(e).with_context(|| {
+                    format!(
+                        "Failed to atomically replace global symlink at {}",
+                        global_path.display()
+                    )
+                })
+            }
+        }
+    }
+}
+
 /// Set the global default version.
 pub fn set_global(version: &Version) -> Result<()> {
     let env_dir = config::envs_dir()?.join(version.as_str());
@@ -141,20 +216,7 @@ pub fn set_global(version: &Version) -> Result<()> {
     }
 
     let global_path = config::global_default_path()?;
-
-    // Remove existing symlink if any
-    if global_path.exists() || global_path.is_symlink() {
-        std::fs::remove_file(&global_path)?;
-    }
-
-    // Create new symlink
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&env_dir, &global_path)
-        .context("Failed to create global symlink")?;
-
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(&env_dir, &global_path)
-        .context("Failed to create global symlink")?;
+    replace_global_symlink(&global_path, &env_dir)?;
 
     println!(
         "Global default set to Flutter {}.",
@@ -191,4 +253,126 @@ pub fn remove_version(version: &Version) -> Result<()> {
     println!("Removed Flutter {version}.");
     println!("   (Cached engine artifacts remain. Run 'joy gc' to free disk space.)");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT_ID: AtomicU32 = AtomicU32::new(90000);
+
+    fn temp_dir() -> PathBuf {
+        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("joy_environment_test_{id}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Redirect XDG dirs to a throwaway location and restore them on drop, so
+    /// the global-default tests never touch the real user config.
+    struct XdgGuard(PathBuf);
+
+    impl Drop for XdgGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("XDG_DATA_HOME");
+                std::env::remove_var("XDG_CACHE_HOME");
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn setup_xdg() -> XdgGuard {
+        let tmp = temp_dir();
+        let data_home = tmp.join("xdg").join("data");
+        let cache_home = tmp.join("xdg").join("cache");
+        std::fs::create_dir_all(&data_home).unwrap();
+        std::fs::create_dir_all(&cache_home).unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &data_home);
+            std::env::set_var("XDG_CACHE_HOME", &cache_home);
+        }
+        XdgGuard(tmp)
+    }
+
+    fn make_fake_installation(version: &Version) -> PathBuf {
+        let env_dir = config::envs_dir().unwrap().join(version.as_str());
+        std::fs::create_dir_all(env_dir.join("bin")).unwrap();
+        std::fs::write(env_dir.join("bin").join("flutter"), b"#!/bin/sh\necho fake").unwrap();
+        env_dir
+    }
+
+    #[test]
+    #[serial]
+    fn set_global_replaces_existing_default() {
+        let _guard = setup_xdg();
+        let v1 = Version::new("3.28.0").unwrap();
+        let v2 = Version::new("3.29.0").unwrap();
+        let env1 = make_fake_installation(&v1);
+        let env2 = make_fake_installation(&v2);
+
+        set_global(&v1).unwrap();
+        let global_path = config::global_default_path().unwrap();
+        assert!(
+            global_path.is_symlink(),
+            "first default should be a symlink"
+        );
+        assert_eq!(std::fs::read_link(&global_path).unwrap(), env1);
+
+        // Replacing an existing default must keep a valid symlink at every
+        // observable step and end up pointing at the new version.
+        set_global(&v2).unwrap();
+        assert!(
+            global_path.is_symlink(),
+            "replacement must leave a valid symlink (not a removed gap)"
+        );
+        assert_eq!(std::fs::read_link(&global_path).unwrap(), env2);
+
+        // No stale temp link may remain beside the real default.
+        let parent = global_path.parent().unwrap();
+        let leftovers: Vec<String> = std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temp symlinks may remain after a successful swap: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn set_global_from_no_default() {
+        let _guard = setup_xdg();
+        let v = Version::new("3.29.0").unwrap();
+        make_fake_installation(&v);
+
+        set_global(&v).unwrap();
+
+        let global_path = config::global_default_path().unwrap();
+        assert!(
+            global_path.is_symlink(),
+            "default should be created as a symlink"
+        );
+        assert_eq!(
+            std::fs::read_link(&global_path).unwrap(),
+            config::envs_dir().unwrap().join("3.29.0")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn set_global_fails_for_uninstalled_version() {
+        let _guard = setup_xdg();
+        let v = Version::new("3.99.0").unwrap();
+        let err = set_global(&v).unwrap_err();
+        assert!(
+            err.to_string().contains("not installed"),
+            "error should mention the version is not installed, got: {err}"
+        );
+    }
 }
