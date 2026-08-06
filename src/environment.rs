@@ -49,6 +49,44 @@ pub fn list_versions() -> Result<()> {
 
     Ok(())
 }
+/// Whether a version has an actual SDK installation on disk — the same
+/// `bin/flutter` presence check installs use (see
+/// [`crate::install::has_flutter_binary`]).
+pub fn version_is_installed(version: &Version) -> bool {
+    let env_dir = match config::envs_dir() {
+        Ok(d) => d.join(version.as_str()),
+        Err(_) => return false,
+    };
+    crate::install::has_flutter_binary(&env_dir)
+}
+
+/// The resolved active toolchain, distinguishing a configured-but-missing
+/// install from one that actually works.
+///
+/// Precedence is unchanged from [`crate::toolchain::resolve_active_version`]
+/// (override → `.joy.json` → global default): a stale project config still
+/// wins over the global default, but it is reported as **Configured** rather
+/// than **Active** so the user immediately sees that commands will fail until
+/// the version is installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveStatus {
+    /// Resolved to a version that is actually installed — commands will work.
+    Active(Version),
+    /// Resolved from configuration (e.g. a stale `.joy.json`) but the version
+    /// is not installed.
+    ConfiguredNotInstalled(Version),
+    /// Nothing is configured — no override, project config, or global default.
+    None,
+}
+
+/// Resolve the effective version and its installation status.
+pub fn resolve_active_status() -> ActiveStatus {
+    match crate::toolchain::resolve_active_version() {
+        Ok(v) if version_is_installed(&v) => ActiveStatus::Active(v),
+        Ok(v) => ActiveStatus::ConfiguredNotInstalled(v),
+        Err(_) => ActiveStatus::None,
+    }
+}
 
 /// Get the current version name from the global symlink
 fn get_current_version_name() -> String {
@@ -87,10 +125,26 @@ pub fn show_current() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let overrides = crate::toolchain::find_overrides(&cwd);
 
-    // Report the effective active version first.
-    match crate::toolchain::resolve_active_version() {
-        Ok(active) => println!("{} {}", "Active:".bold(), active.to_string().green().bold()),
-        Err(_) => println!("{}", "No active toolchain configured.".dimmed()),
+    // Report the effective version first, distinguishing a configured-but-missing
+    // install from a genuinely active one.
+    match resolve_active_status() {
+        ActiveStatus::Active(active) => {
+            println!("{} {}", "Active:".bold(), active.to_string().green().bold())
+        }
+        ActiveStatus::ConfiguredNotInstalled(configured) => {
+            println!(
+                "{} {}",
+                "Configured:".bold(),
+                configured.to_string().yellow().bold()
+            );
+            println!(
+                "   {} {}",
+                "Status:".bold(),
+                "not installed".yellow().bold()
+            );
+            println!("   Install it with 'joy toolchain install {configured}'.");
+        }
+        ActiveStatus::None => println!("{}", "No active toolchain configured.".dimmed()),
     }
 
     if let Some((dir, version)) = overrides.first() {
@@ -103,10 +157,14 @@ pub fn show_current() -> Result<()> {
 
     // Project config (.joy.json)
     if let Some(project_version) = crate::project::read_project_version()? {
-        println!(
-            "  Project: {} (from .joy.json)",
+        // Color the configured version by install status so it agrees with the
+        // "Configured:" / "Active:" header above.
+        let colored = if version_is_installed(&project_version) {
             project_version.to_string().green().bold()
-        );
+        } else {
+            project_version.to_string().yellow().bold()
+        };
+        println!("  Project: {} (from .joy.json)", colored);
     }
 
     // Global default
@@ -207,9 +265,7 @@ pub fn set_global(version: &Version) -> Result<()> {
     let env_dir = config::envs_dir()?.join(version.as_str());
     crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if !env_dir.join("bin").join("flutter").exists()
-        && !env_dir.join("bin").join("flutter.bat").exists()
-    {
+    if !version_is_installed(version) {
         anyhow::bail!(
             "Flutter {version} is not installed. Run 'joy toolchain install {version}' first."
         );
@@ -374,5 +430,92 @@ mod tests {
             err.to_string().contains("not installed"),
             "error should mention the version is not installed, got: {err}"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn version_is_installed_reflects_disk_state() {
+        let _guard = setup_xdg();
+        let v = Version::new("3.29.0").unwrap();
+        assert!(
+            !version_is_installed(&v),
+            "fresh XDG home must have nothing installed"
+        );
+        make_fake_installation(&v);
+        assert!(
+            version_is_installed(&v),
+            "after install it must be installed"
+        );
+    }
+
+    /// A stale .joy.json pointing at an uninstalled version must resolve but be
+    /// reported as `ConfiguredNotInstalled`, not `Active` — otherwise commands
+    /// fail later with no diagnostic hinting at the real cause.
+    #[test]
+    #[serial]
+    fn resolve_active_status_reports_stale_project_config_as_configured() {
+        let _guard = setup_xdg();
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Project config pins a version that is NOT installed.
+        let configured = Version::new("3.99.0").unwrap();
+        std::fs::write(
+            tmp.join(crate::config::PROJECT_CONFIG_FILE),
+            format!("{{\"version\": \"{}\"}}", configured.as_str()),
+        )
+        .unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let status = resolve_active_status();
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert_eq!(
+            status,
+            ActiveStatus::ConfiguredNotInstalled(configured),
+            "stale project config must be reported as configured, not active"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_active_status_is_active_when_installed() {
+        let _guard = setup_xdg();
+        let v = Version::new("3.29.0").unwrap();
+        make_fake_installation(&v);
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join(crate::config::PROJECT_CONFIG_FILE),
+            format!("{{\"version\": \"{}\"}}", v.as_str()),
+        )
+        .unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let status = resolve_active_status();
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert_eq!(
+            status,
+            ActiveStatus::Active(v),
+            "an installed configured version must be Active"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_active_status_none_when_nothing_configured() {
+        let _guard = setup_xdg();
+        let tmp = temp_dir();
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let status = resolve_active_status();
+        std::env::set_current_dir(&orig).unwrap();
+
+        assert_eq!(status, ActiveStatus::None);
     }
 }

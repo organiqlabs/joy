@@ -1,6 +1,7 @@
 use crate::completions;
 use crate::config;
 use crate::engine_cache;
+use crate::environment;
 use crate::git_cache;
 use crate::releases;
 use crate::util::{dir_size, display_path, human_size};
@@ -47,6 +48,27 @@ pub fn run_doctor() -> Result<()> {
         }
     } else {
         println!("No global default set");
+    }
+
+    // Check the effective version resolution (override → .joy.json → global)
+    // and whether the resolved version is actually installed. A stale project
+    // config still wins precedence but must be flagged instead of reported as
+    // a working "Active" toolchain.
+    match environment::resolve_active_status() {
+        environment::ActiveStatus::Active(v) => {
+            println!("Active version: {} {}", v, "(installed)".green().bold());
+        }
+        environment::ActiveStatus::ConfiguredNotInstalled(v) => {
+            println!(
+                "Configured version: {} {}",
+                v,
+                "(not installed!)".yellow().bold()
+            );
+            println!("   Install it with 'joy toolchain install {v}'");
+        }
+        environment::ActiveStatus::None => {
+            println!("No active version configured");
+        }
     }
 
     // Engine cache info

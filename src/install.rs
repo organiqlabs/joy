@@ -418,7 +418,7 @@ fn flatten_sdk(root: &Path) -> Result<()> {
 }
 
 /// Whether an SDK layout has the expected `bin/flutter` entry point.
-fn has_flutter_binary(root: &Path) -> bool {
+pub(crate) fn has_flutter_binary(root: &Path) -> bool {
     root.join("bin").join("flutter").exists() || root.join("bin").join("flutter.bat").exists()
 }
 

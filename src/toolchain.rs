@@ -244,9 +244,7 @@ pub fn set_override(version: &Version) -> Result<()> {
     let env_dir = config::envs_dir()?.join(version.as_str());
     crate::util::check_path_traversal(&env_dir, &config::envs_dir()?)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if !env_dir.join("bin").join("flutter").exists()
-        && !env_dir.join("bin").join("flutter.bat").exists()
-    {
+    if !crate::environment::version_is_installed(version) {
         anyhow::bail!(
             "Flutter {version} is not installed. Run 'joy toolchain install {version}' first."
         );
