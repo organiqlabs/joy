@@ -31,9 +31,11 @@ impl Version {
     /// - Empty strings
     /// - Path separators (`/`, `\`) and null bytes
     /// - Parent-directory references (`..`)
-    /// - Strings that don't match `^[a-zA-Z0-9._-]+$` — ensures the version
+    /// - Strings that don't match `^[a-zA-Z0-9.+_-]+$` — ensures the version
     ///   looks like a valid version string or channel name (e.g. `3.29.0`,
-    ///   `3.29.0-1.0.pre`, `stable`).
+    ///   `3.29.0-1.0.pre`, `v1.12.13+hotfix.9`, `stable`). The `+` is
+    ///   required for the Flutter release API's build-metadata syntax (e.g.
+    ///   `3.29.3+1`); it is safe for filesystem use on all platforms.
     pub fn new(raw: impl Into<String>) -> Result<Self, ParseVersionError> {
         let raw = raw.into();
         if raw.is_empty() {
@@ -51,10 +53,10 @@ impl Version {
         }
         if !raw
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+')
         {
             return Err(ParseVersionError(format!(
-                "Invalid version '{raw}': must only contain letters, digits, dots, hyphens, and underscores"
+                "Invalid version '{raw}': must only contain letters, digits, dots, hyphens, underscores, and plus signs"
             )));
         }
         if raw.starts_with('.') || raw.starts_with('-') {
@@ -186,6 +188,22 @@ mod tests {
     }
 
     #[test]
+    fn test_version_rejects_whitespace() {
+        // Whitespace (including tabs/newlines) must stay rejected — it is not
+        // filesystem-safe and can hide traversal tricks.
+        assert!(
+            Version::new("3.29.0 ").is_err(),
+            "trailing space should fail"
+        );
+        assert!(
+            Version::new(" 3.29.0").is_err(),
+            "leading space should fail"
+        );
+        assert!(Version::new("3.29\n0").is_err(), "newline should fail");
+        assert!(Version::new("3.29\t0").is_err(), "tab should fail");
+    }
+
+    #[test]
     fn test_version_rejects_special_characters() {
         assert!(
             Version::new("foo bar").is_err(),
@@ -217,7 +235,6 @@ mod tests {
             Version::new("foo*bar").is_err(),
             "asterisk should be rejected"
         );
-        assert!(Version::new("foo+bar").is_err(), "plus should be rejected");
         assert!(
             Version::new("foo=bar").is_err(),
             "equals should be rejected"
@@ -252,6 +269,22 @@ mod tests {
             Version::new("-3.29.0").is_err(),
             "leading hyphen + version should be rejected"
         );
+    }
+
+    #[test]
+    fn test_version_accepts_build_metadata_with_plus() {
+        // The Flutter release API emits build metadata using `+` (e.g. hotfix
+        // builds and +1 revision bumps). These must not be discarded.
+        assert!(
+            Version::new("v1.12.13+hotfix.9").is_ok(),
+            "old Flutter release with +hotfix must be accepted"
+        );
+        assert!(
+            Version::new("3.29.3+1").is_ok(),
+            "revision bump with +1 must be accepted"
+        );
+        assert!(Version::new("3.29.0+2").is_ok());
+        assert!(Version::new("v1.9.1+hotfix.6").is_ok());
     }
 
     #[test]

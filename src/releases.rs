@@ -467,6 +467,51 @@ mod tests {
         ]
     }
 
+    /// Regression: the Flutter release API emits build metadata with `+`
+    /// (e.g. `v1.12.13+hotfix.9`, `3.29.3+1`). These must convert to a
+    /// `ReleaseInfo`, not be silently skipped by the version validator.
+    #[test]
+    fn test_convert_release_accepts_plus_build_metadata() {
+        for version in ["v1.12.13+hotfix.9", "3.29.3+1"] {
+            let r = FlutterRelease {
+                version: version.to_string(),
+                channel: "stable".to_string(),
+                archive: format!("releases/{version}/flutter.tar.xz"),
+                sha256: "abc123".to_string(),
+                release_date: "2019-05-07".to_string(),
+            };
+            let info = convert_release(
+                r,
+                "https://storage.googleapis.com/flutter_infra_release/releases",
+            )
+            .expect("a +-build release must not be skipped");
+            assert_eq!(info.version.as_str(), version);
+        }
+    }
+
+    /// Releases whose version contains path separators or other unsafe
+    /// characters must still be rejected (skipped) — never silently accepted.
+    #[test]
+    fn test_convert_release_still_rejects_unsafe_versions() {
+        for bad in ["3.29/0", "3.29\\0", "..\\..\\evil", "3.29 0"] {
+            let r = FlutterRelease {
+                version: bad.to_string(),
+                channel: "stable".to_string(),
+                archive: "releases/3.29.0/flutter.tar.xz".to_string(),
+                sha256: "abc123".to_string(),
+                release_date: "2025-01-15".to_string(),
+            };
+            assert!(
+                convert_release(
+                    r,
+                    "https://storage.googleapis.com/flutter_infra_release/releases"
+                )
+                .is_none(),
+                "unsafe version '{bad}' must be skipped"
+            );
+        }
+    }
+
     #[test]
     #[serial]
     fn test_save_and_load_cache_roundtrip() {
